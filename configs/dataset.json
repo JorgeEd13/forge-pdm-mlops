@@ -1,0 +1,7 @@
+{
+  "_comment": "Canonical training-dataset spec — the SINGLE cross-machine source of truth (ADR-001). The data layer regenerates the FULL dataset from this file + the pinned can-telemetry-forge version, so desktop and notebook produce byte-identical data. This is NOT the reduced committed sample: the smoke fixture in data/sample_readings.parquet exists only so the repo runs offline/CI; models are ALWAYS trained on the full dataset regenerated from here. Any subset of keys overrides the generator's bundled default fleet.",
+  "seed": 42,
+  "days": 90,
+  "resolution": "5min",
+  "failure_horizon_h": 168.0
+}

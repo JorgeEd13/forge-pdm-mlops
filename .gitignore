@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# MLflow local backend — runs/registry are reproducible from a seed, never committed
+mlruns/
+mlartifacts/
+
+# Generated data is regenerated from the companion generator + a seed, never committed.
+# The one exception is the tiny committed sample the package runs/tests on offline.
+data/
+*.parquet
+!data/
+!data/sample_readings.parquet
+
+# Drift reports / serving artifacts produced at run time
+reports/
+*.html

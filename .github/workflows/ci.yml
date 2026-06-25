@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Core + dev only. The pipeline runs fully offline against the committed
+      # sample, so CI never installs the [generate] extra (the companion
+      # generator) nor reaches the network.
+      - name: Install package (with dev extras)
+        run: python -m pip install -e .[dev]
+
+      - name: pdm --version
+        run: pdm --version
+
+      - name: Run tests (offline)
+        run: python -m pytest -q
