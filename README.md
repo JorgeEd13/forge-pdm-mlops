@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F0%20%E2%80%94%20skeleton-yellow" alt="Status: F0 — skeleton">
+  <img src="https://img.shields.io/badge/status-F1%20%E2%80%94%20data%20%2B%20features-yellow" alt="Status: F1 — data + features">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
   <img src="https://img.shields.io/badge/serving-FastAPI-009688" alt="FastAPI">
@@ -45,14 +45,16 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F0 (skeleton).** Right now the repo is a clone-and-run
-> skeleton: an importable package, a `pdm` CLI whose subcommands are **honestly
+> ⚠️ **Honest status — F1 (data + leakage-safe features).** The runnable skeleton
+> (F0) is in place — importable package, a `pdm` CLI whose subcommands are **honestly
 > stubbed** until their phase lands, green CI on Linux + Windows × Python 3.11/3.12,
-> the canonical dataset config, and a committed offline smoke fixture. The training,
-> registry, serving and drift loop land across F1–F5 — see
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a live production
-> deployment; the drift→retrain loop, once shipped, is a **demonstrated closed loop
-> on synthetic data**.
+> the canonical dataset config, and a committed offline smoke fixture. **F1 adds the
+> real data layer**: full-dataset regeneration from the canonical config (with a loud
+> fallback to the offline fixture) and a **leakage-safe feature pipeline** — see
+> [the section below](#honest-evaluation-baked-in-f1). Training, registry, serving and
+> the drift loop land across F2–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing
+> here implies a live production deployment; the drift→retrain loop, once shipped, is a
+> **demonstrated closed loop on synthetic data**.
 
 ## Why the data is trustworthy (and reproducible)
 
@@ -65,6 +67,29 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
   always train on the **full** dataset regenerated from the canonical config;
   `data/sample_readings.parquet` exists only so `clone && pytest` and CI run offline
   (see [ADR-001](docs/DECISIONS.md)).
+
+## Honest evaluation, baked in (F1)
+
+A predictive-maintenance score is easy to inflate by accident. The feature layer
+([`features.py`](src/pdm_mlops/features.py)) makes three guards **tested invariants**,
+not good intentions:
+
+- **A leakage guard that fails the build.** Inputs are the J1939 **sensor signals
+  only**. The target and its label-side bookkeeping (`failure_mode`, `anomaly_type`,
+  `is_outlier`) are knowable only *because* the failure already happened, so
+  `assert_no_leakage` **raises** if any of them reaches the feature matrix — and a
+  test asserts it actually fires.
+- **Era-gated missingness is kept as signal, not imputed.** Older machines never had
+  some sensors, so whole units are `NULL` for those channels. That missingness is
+  informative, so the feature frame preserves it (LightGBM consumes `NaN` natively;
+  the LogReg pipeline imputes at *model* time, in F2) — no blind imputation upstream.
+- **The train/test split is by *unit*.** Each machine's readings are an autocorrelated
+  time series, so a random row split would leak one unit's behaviour across the
+  boundary and inflate the score. A seeded `GroupShuffleSplit` keeps every unit on one
+  side only; disjointness is asserted, not assumed.
+
+Determinism threads end to end — one seed → data → split → (F2) metrics. Rationale in
+[ADR-003](docs/DECISIONS.md).
 
 ## The stack (and why two orchestration layers)
 
@@ -90,8 +115,8 @@ pip install -e .[dev]
 pytest -q
 pdm --version
 
-# Later phases (F1+) regenerate the FULL dataset from the canonical config.
-# Install the pinned generator to do real runs:
+# Real runs regenerate the FULL dataset from the canonical config (F1+).
+# Install the pinned generator to enable it:
 pip install -e .[generate]
 ```
 
@@ -108,8 +133,8 @@ pdm monitor           # F5 — an Evidently drift report
 
 | Phase | What |
 |------|------|
-| **F0** | Foundations & runnable skeleton (package, CLI, CI, canonical config, smoke fixture) ◑ |
-| **F1** | Data adapter (full regeneration + offline fallback) + leakage-safe features ☐ |
+| **F0** | Foundations & runnable skeleton (package, CLI, CI, canonical config, smoke fixture) ✅ |
+| **F1** | Data adapter (full regeneration + offline fallback) + leakage-safe features ✅ |
 | **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ☐ |
 | **F3** | Model registry — gated stage→production promotion + rollback ☐ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
