@@ -44,6 +44,11 @@ dev = ["pytest>=7"]
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
 # Drift monitoring + orchestration (F5): Evidently drift report, Prefect flow.
 ops = ["evidently>=0.4", "prefect>=2.16"]
+# Deep outlier rung (F2.5): the CPU-only PyTorch autoencoder in the detection ladder.
+# Optional and kept OUT of core CI — the ladder runs (and signal_suspect is computed)
+# without it via the cheap multivariate + temporal rungs (ADR-005). CPU build only;
+# no GPU/CUDA on the production desktop.
+deep = ["torch>=2.0"]
 # Live data regeneration (D1): import the companion generator to produce the FULL
 # training dataset from configs/dataset.json + a seed, and to move the `season`
 # drift knob. The version is PINNED so desktop and notebook regenerate
