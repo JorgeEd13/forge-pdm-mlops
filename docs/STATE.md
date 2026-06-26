@@ -1,15 +1,16 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-06-25
+Updated: 2026-06-26
 
 ## Current focus
 
-**F0 (Foundations & runnable skeleton) — in progress.** Scaffolded the 4th public
-showcase: the MLOps half of the `can-telemetry-forge` narrative. The skeleton
-imports, the `pdm` CLI runs with honestly-stubbed subcommands, the canonical
-dataset config and the offline smoke fixture are in place, and the CI + scheduled
-retrain workflows are wired. ADR-001 (data coupling) and ADR-002 (the stack + why
-both orchestrators) are recorded.
+**F1 (Data + features) — DONE.** The data layer regenerates the **full** dataset
+from the canonical config when the generator is present, and falls back **loudly**
+to the committed smoke fixture offline (ADR-001). The feature layer turns `readings`
+into a leakage-safe modelling frame: signals-only inputs with a tested leakage
+guard, era-NULL missingness preserved (no imputation), and a deterministic
+**unit-grouped** train/test split. ADR-003 records the three guards. **15 tests
+green offline.** (F0 — the runnable skeleton — closed at the prior boundary.)
 
 ## Done
 
@@ -39,14 +40,35 @@ both orchestrators) are recorded.
   The repo exists on GitHub with git initialized (branch `main`, remote set, no
   commits yet — F0 is the first commit).
 
+### F1 — Data + features (2026-06-26)
+
+- **`data.py`** — `load_readings()` prefers **full regeneration** from
+  `configs/dataset.json` via the pinned generator (`regenerate_full`, with a
+  `season` override hook for the F5 drift loop); falls back to the committed fixture
+  with a **loud** `UserWarning` when the generator is absent, or raises
+  `GeneratorUnavailable` if fallback is disabled. Verified on the real path: 90-day
+  full dataset = **3.47M rows × 134 units** in ~98 s.
+- **`features.py`** — `prepare()` returns a frozen `Dataset` (X/y/groups train+test).
+  Inputs are the 8 J1939 signals only; `assert_no_leakage` (tested to fire) blocks
+  the target + `failure_mode`/`anomaly_type`/`is_outlier`. **Era-NULL preserved** (no
+  imputation). **Unit-grouped** `GroupShuffleSplit` (seeded, 25% of units), asserted
+  disjoint — full data splits 100/34 units, fixture splits its 20 units cleanly.
+- **Tests** — `test_data.py` (5: fixture load, fallback warns, season flagged,
+  no-fallback raises, full-path-not-touching-fixture via monkeypatch) +
+  `test_features.py` (6: signals-only/leakage-fires, unit-disjoint, determinism,
+  seed-drives-partition, era-NULL preserved, binary target). All offline.
+- **ADR-003** records the leakage guard / era-NULL / unit-split policy.
+
 ## Next step (concrete)
 
-**F1 — Data + features.** Implement `data.py` (regenerate the full dataset from
-`configs/dataset.json`; loud fallback to the fixture when the generator is absent)
-and `features.py` (era-`NULL` handling, a leakage guard, a **unit-grouped**
-train/test split). Tests run on the committed fixture. See ROADMAP F1.
+**F2 — Train + track (MVP core).** Implement `models.py` (LogReg pipeline with
+imputation+scaling + LightGBM, behind one `fit`/`predict_proba`), `train.py` (log
+**both** to MLflow on the local file backend — params, ROC-AUC, the model artifact —
+and return the winner), and wire `pdm train`. ADR-004 for the two-model comparison.
+DoD: two tracked runs + a registered winner + a same-seed-same-metric test. Train on
+the full regenerated dataset; tests stay offline on the fixture. See ROADMAP F2.
 
-One phase per session — F0 closes at this boundary for review before F1 starts.
+One phase per session — F1 closes at this boundary for review before F2 starts.
 
 ## Notes
 
