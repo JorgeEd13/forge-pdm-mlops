@@ -7,7 +7,8 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F2.5%20%E2%80%94%20outlier%20robustness-yellow" alt="Status: F2.5 — outlier robustness">
+  <img src="https://img.shields.io/badge/status-F2.6%20%E2%80%94%20tune%20%2B%20diagnose-yellow" alt="Status: F2.6 — tune + diagnose">
+  <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
   <img src="https://img.shields.io/badge/serving-FastAPI-009688" alt="FastAPI">
@@ -45,16 +46,25 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F2.5 (outlier robustness).** F0 (skeleton), F1 (real data layer
-> + leakage-safe features) and **F2 (the training core — `pdm train` runs a two-model
-> comparison and registers the winner in MLflow)** are in place. **F2.5 adds outlier
-> robustness**: an unsupervised detection ladder **scored against the generator's
-> ground-truth labels**, turned into a leakage-safe `signal_suspect` feature (see [the
-> section below](#outlier-robustness-scored-against-ground-truth-f25)). `serve`, the
-> registry promotion gate, and the drift loop land across F3–F5 — see
+> ⚠️ **Honest status — F2.6 (tune + diagnose).** F0 (skeleton), F1 (real data layer +
+> leakage-safe features), **F2 (the training core — a two-model comparison, winner
+> registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
+> ladder → a leakage-safe `signal_suspect` feature)** and **F2.6 (grouped-CV Optuna HPO
+> + model diagnostics + training watchers)** are in place. `serve`, the registry
+> promotion gate, and the drift loop land across F3–F5 — see
 > [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a live production
 > deployment; the drift→retrain loop, once shipped, is a **demonstrated closed loop on
 > synthetic data**.
+>
+> 🔎 **The score is real (≈ 0.82), and that took fixing the *data*, not the model.**
+> Early on the classifier scored ≈ 0.55 — chance. Rather than tune the model, I measured
+> *why*: a failing unit's pre-failure rows were statistically identical to its healthy
+> rows, so there was **no signal to learn**. The root cause was upstream, in the
+> generator — failures had a *when* but the sensors had no *path toward* it. Fixed there
+> (`can-telemetry-forge` v0.2.0 added **progressive pre-failure degradation**), with the
+> leakage guards intact, the same model reaches **≈ 0.82 ROC-AUC**. Two attempts to also
+> rebalance the failure hazard were measured and **rejected** (neither beat the fix).
+> *Finding that my own showcase was measuring at chance — and saying so — is the point.*
 
 ## Why the data is trustworthy (and reproducible)
 
@@ -149,6 +159,29 @@ pdm detect                # run the ladder on the full dataset, print the scored
 pdm detect --autoencoder  # include the [deep] torch rung
 ```
 
+## Tuning as a tracked, honest process (F2.6)
+
+On the **cleaned** F2.5 inputs, F2.6 makes "why this model, with these params"
+*visible and guarded* — deliberately **not** an accuracy play
+([`tune.py`](src/pdm_mlops/tune.py), [`diagnostics.py`](src/pdm_mlops/diagnostics.py)):
+
+- **HPO that can't cheat.** An **Optuna** study per model, scored by **unit-grouped
+  cross-validation** (`GroupKFold`) — so the search can't leak a unit across folds — on
+  the *training* split only, so it never tunes against the reported test number. Each
+  study is tracked to MLflow; tuned params feed `train`.
+- **Diagnostics as artifacts, not scalars.** Per fitted model: feature importance,
+  calibration, a precision/recall threshold sweep, a learning curve — written as CSVs
+  (always) + PNGs (when matplotlib is present).
+- **Training watchers that fail loud.** An **overfit-gap** guard (train − CV AUC) and a
+  **majority-baseline** guard (must beat 0.5), opt-in via `--audit`. On the tiny smoke
+  fixture the deep model genuinely overfits and the guard **trips** — kept and tested as
+  *the guard working*, not silenced ([ADR-006](docs/DECISIONS.md)).
+
+```bash
+pdm tune                          # grouped-CV Optuna HPO, tracked to MLflow
+pdm train --tune --audit --diagnose   # tune, then train on tuned params with guards + artifacts
+```
+
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
@@ -183,6 +216,7 @@ The `pdm` CLI surface (subcommands fill in by phase):
 ```bash
 pdm train             # F2   — train both models, track to MLflow, register the winner (LIVE)
 pdm detect            # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
+pdm tune              # F2.6 — grouped-CV Optuna HPO on the cleaned inputs, tracked (LIVE)
 pdm serve             # F4   — FastAPI serving the promoted model
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
 pdm monitor           # F5   — an Evidently drift report
@@ -196,7 +230,7 @@ pdm monitor           # F5   — an Evidently drift report
 | **F1** | Data adapter (full regeneration + offline fallback) + leakage-safe features ✅ |
 | **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ✅ |
 | **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ✅ |
-| **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ☐ |
+| **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ✅ |
 | **F3** | Model registry — gated stage→production promotion + rollback ☐ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |

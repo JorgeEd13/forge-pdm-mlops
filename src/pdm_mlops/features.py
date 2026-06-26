@@ -32,6 +32,9 @@ from . import config
 
 #: The model's input signals — the J1939 sensor channels only. Order is fixed so the
 #: feature matrix is stable across runs (determinism). Era-NULL values are preserved.
+#: ``vibration_mms`` is the bearing-failure signature (ADR-020 in the generator made it
+#: a learnable, progressively-degrading channel); it is era-gated (NULL on Legacy units
+#: with no vibration bus), which the era-NULL handling (ADR-003) already covers.
 FEATURE_COLUMNS: tuple[str, ...] = (
     "engine_speed_rpm",
     "coolant_temp_c",
@@ -41,6 +44,7 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "boost_pressure_kpa",
     "egt_c",
     "def_level_pct",
+    "vibration_mms",
 )
 
 #: Columns that must NEVER become features: the target itself plus label-side

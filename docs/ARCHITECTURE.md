@@ -53,8 +53,10 @@ configs/dataset.json + pinned can-telemetry-forge
 | `detect.py` | F2.5 detection ladder (multivariate + temporal + autoencoder), signals-only suspicion per row. |
 | `detect_score.py` | Grade the ladder vs. ground-truth labels (the **only** place labels are read); tie-aware alarm budget. |
 | `suspect.py` | Combine the ladder → leakage-safe `signal_suspect` feature + a data-quality (forensic) watcher. |
-| `models.py` | LogReg baseline + LightGBM contender behind one `fit`/`predict_proba`. |
-| `train.py` | Train both, log to MLflow, return the winner by the primary metric. |
+| `models.py` | LogReg baseline + LightGBM contender behind one `fit`/`predict_proba`; validated tuned `overrides`. |
+| `tune.py` | F2.6 **grouped-CV Optuna** HPO per model on the cleaned frame; tracked to MLflow; tuned params feed `train`. |
+| `diagnostics.py` | F2.6 model diagnostics (importance/calibration/threshold/learning-curve artifacts) + training watchers (overfit-gap, majority-baseline). |
+| `train.py` | Train both, log to MLflow, return the winner by the primary metric; optional tuned/cleaned/`--audit`/`--diagnose`. |
 | `registry.py` | Register + **metric-gated** stage→production promotion + rollback. |
 | `serve.py` | FastAPI serving the **production** registry model. |
 | `monitor.py` | Evidently drift report (baseline vs. season shift) + a drift decision. |
