@@ -4,6 +4,22 @@ Updated: 2026-06-26
 
 ## Current focus
 
+**F2.5 (Outlier robustness — clean first) — DONE.** A three-rung detection ladder
+(`detect.py`) — multivariate (IsolationForest + robust Mahalanobis), temporal
+(exact-value freeze runs + sustained monotone creep, with the detectable signals chosen
+**unsupervised** at fit time), and a CPU-only PyTorch autoencoder — each **scored against
+the generator's ground-truth labels** (`detect_score.py`), which are read in exactly one
+place to *grade* (and to tune the temporal constants), never as a detector input or a
+model feature (the ADR-003 leakage guard holds, asserted by test). The autoencoder
+**earns its place** (best overall, beats the cheap rungs on subtle recall). The temporal
+rung is a **deliberate rewrite**: its first rolling-variance/slope form scored ~0.02 F1
+and flagged >85 % of rows; the diagnosis became the fix, and the negative result is
+logged in ADR-005. Output = a leakage-safe **`signal_suspect`** feature
+(`suspect.add_signal_suspect`, opt-in via `features.prepare(suspect_feature=True)`) + a
+**data-quality watcher** (`suspect.data_quality_check`, forensic-watcher pattern, doubles
+as an F5 drift signal). `pdm detect` prints the scored table. New `[deep]` torch extra,
+out of core CI. **49 tests green offline** (27 from F0–F2 + 22 new). ADR-005.
+
 **F2 (Train + track — MVP core) — DONE.** `pdm train` now runs an honest
 **two-model comparison** (LogReg pipeline + LightGBM behind one interface), logs
 **both** as MLflow runs (params + ROC-AUC + the fitted model artifact), picks the
@@ -90,33 +106,59 @@ runnable skeleton — closed at an earlier boundary.)
   registry, same-seed-same-metric, defaults to the data loader, `DegenerateSplit`
   fires on the degenerate fixture seed). MLflow → tmp SQLite; all offline.
 
+### F2.5 — Outlier robustness (2026-06-26)
+
+- **`detect.py`** — the ladder behind one `Detector` surface (`fit`/`score` → a
+  `[0,1]` suspicion per row, **label-free**): `MultivariateDetector` (IsolationForest +
+  `MinCovDet` Mahalanobis, `support_fraction=0.9`), `TemporalDetector` (exact-value
+  freeze runs ≥ `STUCK_MIN_RUN` on *unsupervised-selected* continuous signals + a
+  sustained monotone-creep window on *non-monotone* signals), `AutoencoderDetector`
+  (CPU torch, reconstruction error). `build_ladder`/`fit_score_all`.
+- **`detect_score.py`** — reads the labels (the **only** place) to grade each rung:
+  ROC-AUC + AP vs. `is_outlier`, per-`anomaly_type` recall at a **tie-aware** top-2%
+  alarm budget (`_alarm_set` — a sparse detector can't win by flagging everything), and
+  the **autoencoder-earns-its-place** verdict. `pdm detect` prints the table.
+- **`suspect.py`** — `add_signal_suspect` (combines rungs → the leakage-safe
+  `signal_suspect` column, re-passes the guard) wired into `features.prepare(
+  suspect_feature=True)`; `data_quality_check` forensic watcher (raises
+  `DataQualitySpike` in strict mode; F5 drift signal).
+- **The temporal rewrite (ADR-005).** Rolling-variance/slope → stuck/drift scored ~0.02
+  F1 and flagged >85% of rows; rewritten to the freeze-run / monotone-creep signatures
+  with unsupervised signal eligibility → stuck recall ≈0.59 @ precision ≈0.64 on
+  native-res, drift high-precision/low-recall. The negative result is documented, not
+  hidden. Thresholds auto-derived vs. ground truth (with Jorge) then pinned.
+- **`[deep]` extra** (CPU `torch`), kept out of core CI. **ADR-005.**
+- **Tests** — `test_detect.py` (12: ranges, label-free proof, determinism, unsupervised
+  signal selection, no-flag-everything, `_equal_run_lengths`, AE skip-if-no-torch),
+  `test_detect_score.py` (6: grades well-formed, tie-aware budget dense+sparse, NaN for
+  absent family, loud on missing labels), `test_suspect.py` (6: feature leakage-safe,
+  `prepare` wiring, determinism, watcher fires + strict raises). **49 total green.**
+
 ## Next step (concrete)
 
-**F2.5 — Outlier robustness (clean first).** Re-scoped with Jorge (2026-06-26) after he
-raised two things: (1) healthy skepticism about delegating ML judgment to me, and (2)
-the generator **deliberately injects subtle, hard-to-spot outliers** the MLOps side must
-handle. Clean-first is the right ML order (tuning on poisoned inputs is backwards), so
-**outlier robustness becomes F2.5 and tuning/diagnostics moves to F2.6.**
+**F2.6 — Tune + diagnose (instrumentation).** On the **cleaned** F2.5 inputs (train with
+`features.prepare(suspect_feature=True)` so `signal_suspect` is in the matrix), make
+"why this model, with these params" visible and defensible. **Not** an accuracy play —
+on this synthetic data the score is faint by design; the value is the tracked search +
+diagnostics + guards.
 
-Build a **detection ladder, each rung scored against the generator's ground-truth
-labels** (`anomaly_type`/`is_outlier`): (a) **multivariate** — IsolationForest +
-robust-covariance **Mahalanobis** (catches `joint_outlier`: each signal plausible, the
-*combination* implausible — Jorge's exact framing, "together they're suspects"); (b)
-**temporal** — per-unit rolling variance/slope for `sensor_stuck`/`sensor_drift`
-(thresholds = a domain call WITH Jorge); (c) **autoencoder** — small CPU-only PyTorch
-AE, reconstruction error = suspicion (Jorge chose to include it now; it must **earn its
-place** — scored vs. ground truth and reported honestly whether it beats the cheap
-rungs on *subtle* recall). Output = a **leakage-safe `signal_suspect` feature** (derived
-from signals ONLY, scored against labels, never trained on the label — F1 leakage guard
-stays sacred) + a **data-quality watcher**. ADR-005. New `[deep]` extra (CPU torch),
-kept out of core CI. Likely 1–2 sessions. See ROADMAP F2.5.
+- **HPO (`tune.py`)** — an **Optuna** study (small budget ~30–50 trials, seeded) over
+  each model's param space, scored by **unit-grouped CV** (`GroupKFold`) so the search
+  can't leak units across folds and undo ADR-003. Logged to MLflow; `pdm tune` runs it;
+  tuned params feed `train`. New `[tune]` extra (`optuna`).
+- **Diagnostics** — per fitted model, log to its MLflow run: a learning curve, feature
+  importance (LightGBM gain / LogReg |coef| — `signal_suspect` should rank), a
+  calibration check, and a precision/recall threshold sweep. Artifacts, not just scalars.
+- **Training watchers** (forensic pattern): `DegenerateSplit` (shipped F2), an
+  **overfit-gap** guard (train − CV AUC over a threshold), and a **majority-baseline**
+  guard (test AUC must beat the majority class). Opt-in `--audit`.
+- **ADR-006** — HPO method, the diagnostics set, the watcher policy, the honesty note.
 
-**Then F2.6 — Tune + diagnose:** Optuna grouped-CV HPO on the cleaned inputs +
-diagnostics + overfit/majority/degenerate watchers. ADR-006. **Honesty note:** on this
-synthetic data neither cleaning nor HPO will move the ~0.547 AUC much — the value is the
-*visible, ground-truth-scored process + the guards*, not accuracy.
+**Honesty note:** neither F2.5 cleaning nor F2.6 HPO will move the ~0.547 AUC much on
+this synthetic data — the value is the *visible, ground-truth-scored process + the
+guards*, not accuracy.
 
-One phase per session — F2 closes at this boundary for review before F2.5 starts.
+One phase per session — F2.5 closes at this boundary for review before F2.6 starts.
 
 ## Notes
 

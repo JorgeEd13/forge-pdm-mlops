@@ -9,7 +9,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F0** | ✅ done | Foundations & runnable skeleton (package, `pdm` CLI, CI, committed smoke fixture, canonical dataset config) |
 | **F1** | ✅ done | Data adapter (full regeneration + offline fixture fallback) + features (era-NULL handling, leakage guard, unit-grouped split) |
 | **F2** | ✅ done | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
-| **F2.5** | ☐ | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels (obvious vs. subtle recall), → a leakage-safe `signal_suspect` feature + a data-quality watcher |
+| **F2.5** | ✅ done | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder ladder on signals, scored vs. ground truth (AE earns its place; temporal rewritten after a logged negative result) → a leakage-safe `signal_suspect` feature + a data-quality watcher |
 | **F2.6** | ☐ | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
@@ -84,11 +84,18 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
   - **ADR-005** — the detection ladder, the signals-only/score-only honesty rule, the
     cleaning policy (`signal_suspect` feature), and the autoencoder "earn-its-place"
     decision + result.
-- **DoD.** A reported, ground-truth-scored detection table (recall on **obvious vs.
+- **DoD.** ✅ A reported, ground-truth-scored detection table (recall on **obvious vs.
   each subtle family**, detector by detector); the autoencoder compared head-to-head
-  with the cheap methods on subtle recall; a leakage-safe `signal_suspect` feature that
-  the leakage guard still passes; the data-quality watcher fires in a test; everything
-  seeded/deterministic and offline on the fixture.
+  with the cheap methods on subtle recall (**it earns its place**); a leakage-safe
+  `signal_suspect` feature that the leakage guard still passes; the data-quality watcher
+  fires in a test; everything seeded/deterministic and offline on the fixture.
+- **Shipped.** `detect.py` (ladder), `detect_score.py` (tie-aware ground-truth scoring),
+  `suspect.py` (`signal_suspect` feature + data-quality watcher), `pdm detect`, the
+  `[deep]` torch extra (out of core CI), ADR-005. The temporal rung was **rewritten**
+  after its rolling-variance/slope form scored ~0.02 F1 — the diagnosis (stuck = an
+  exact-value freeze on an unsupervised-selected continuous signal; drift = a sustained
+  monotone creep on a non-monotone signal) is the fix, and the negative result is logged
+  in ADR-005, not hidden. 22 new offline tests (49 total green).
 
 ## F2.6 — Tune + diagnose (instrumentation)
 

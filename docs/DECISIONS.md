@@ -176,3 +176,94 @@ metric that is either real or an explicit error — never a silent `nan`.
 **Consequences.** `pdm train` produces **two tracked runs + a registered winner** and
 is deterministic (same seed → same metrics). The backend is a single SQLite file +
 an artifact dir, both git-ignored. F3 builds promotion/rollback on this same registry.
+
+---
+
+## ADR-005 — Outlier robustness: a ground-truth-scored detection ladder; signals-only/score-only honesty; `signal_suspect` feature; the temporal-rung rewrite; the autoencoder earns its place
+
+**Date:** 2026-06-26 · **Phase:** F2.5 · **Status:** accepted
+
+**Context.** The companion generator deliberately injects nine defect families, split
+into **obvious** (`obvious_outlier` — one signal out of range) and **subtle**
+(`joint_outlier`: each signal plausible, the *combination* not; `sensor_stuck`: an
+in-range value that freezes; `sensor_drift`: a slow creep; the `can_frame_*` faults). A
+serious PdM model has to survive these, and **cleaning before tuning** is the right ML
+order — so robustness is F2.5 and HPO is F2.6 (it tunes on the cleaned frame). This
+pillar is only *measurable* because the generator labels the outliers: the two repos
+tell one story — the generator plants and labels the dirt, the MLOps side proves it
+cleans it.
+
+**Decision.**
+
+1. **A detection ladder, each rung scored against ground truth** (`detect.py` +
+   `detect_score.py`). Cheap → adaptive:
+   - **Multivariate** — `IsolationForest` + a robust-covariance (`MinCovDet`,
+     `support_fraction=0.9`) **Mahalanobis** distance over the signal vector. Catches
+     the joint outlier a per-column check misses (700 rpm at 95 % load). The two views
+     are min-max'd and combined by elementwise max.
+   - **Temporal** — per-unit detection of `sensor_stuck` and `sensor_drift`.
+   - **Autoencoder** — a small CPU-only PyTorch AE; reconstruction error = suspicion.
+     New `[deep]` extra, **kept out of core CI**.
+
+2. **The hard honesty rule — signals-only detection, score-only labels.** Every rung
+   runs on the **feature signals only**; the `is_outlier` / `anomaly_type` labels are
+   read in exactly one place — the scoring harness — to *grade* the detectors (and to
+   *tune* the temporal constants). They are **never** a detector input or a model
+   feature. A test (`test_detectors_are_label_free`) asserts that dropping the label
+   columns does not change any score. The F1 leakage guard (ADR-003) stays sacred.
+
+3. **The temporal rung is a from-scratch rewrite — and *why* matters.** The first
+   attempt (rolling **variance** → stuck, rolling **slope** → drift on a robust-z
+   scale) **failed**: even with thresholds tuned against the labels, its best F1 was
+   **~0.02** (precision ~1 %) and it flagged **>85 % of rows**. The diagnosis was the
+   fix: a *stuck* sensor is not "low variance" (a running engine's other signals keep
+   moving and drown it) — it is **one signal repeating its exact value** while the rest
+   move; a *drift* is not "a steep window" — it is a **sustained monotonic creep**.
+   Detecting those signatures directly, with the detectable signals chosen
+   **unsupervised at fit time** (continuous = near-zero baseline exact-repeat rate;
+   drift-eligible = low baseline monotone-window fraction, so always-monotone channels
+   like DEF level can't read as "drifting forever"), turned it into a real detector:
+   on native-resolution data, **stuck recall ≈ 0.59 at precision ≈ 0.64**, drift caught
+   at **high precision / low recall** (a clean ramp, few false alarms — the right bias
+   for a feature). The honest cap: stuck recall ~0.6 because some freezes hit a
+   non-continuous channel, and drift is genuinely the hardest family. **The negative
+   result and its repair are part of the portfolio point**, not hidden.
+
+4. **The thresholds are auto-derived from ground truth, then pinned.** The temporal
+   constants (`STUCK_MIN_RUN`, `DRIFT_WINDOW`, `DRIFT_MONOTONE_FRAC`, the eligibility
+   bounds) were swept against the labelled data for the best precision/recall trade and
+   frozen as module constants — labels *tune* the detector, they never become an input.
+
+5. **A tie-aware alarm budget in the scoring harness.** Per-family recall is measured
+   at a fixed top-2 % alarm budget so a flag-everything rung can't "win". A naive budget
+   quantile lands on a sparse detector's zero floor and would alarm every row; the
+   tie-aware `_alarm_set` credits a 0.6 %-flagging detector with exactly those rows.
+
+6. **The autoencoder earns its place.** Scored head-to-head like the cheap rungs, the AE
+   is the **best overall** detector (AP ≈ 0.62–0.65 vs. multivariate ≈ 0.24) and
+   **beats the best cheap rung on mean subtle recall** — so it stays. Had it not, the
+   harness would have reported that plainly (`autoencoder_earns_place`). Each rung also
+   owns a *different* family — multivariate the joints, temporal the freezes, the AE the
+   broad/subtle shapes — a complementary ensemble, not redundancy.
+
+7. **Output = a leakage-safe `signal_suspect` feature + a data-quality watcher.**
+   `suspect.add_signal_suspect` combines the rungs (mean; cheap rungs by default so the
+   feature needs no torch) into one `[0,1]` suspicion column appended to the feature
+   matrix (`features.prepare(suspect_feature=True)`), re-passing the leakage guard so it
+   is *proven* label-free. `suspect.data_quality_check` is a forensic watcher
+   (the project's watcher pattern): it fails **loud** (raises in `strict` mode) when a
+   batch's suspect rate spikes past a fitted baseline — a sensor bank going bad, or, in
+   F5, the drifted season inflating outliers. It doubles as a drift signal for F5.
+
+**Why.** F2.5 is where the project earns the word "robust" honestly: not by asserting
+the pipeline handles dirty data, but by **scoring detectors against labelled dirt,
+reporting what each does and doesn't catch, repairing a rung that didn't work and saying
+so, and shipping the result as a leakage-safe feature**. The synthetic data makes the
+ground truth available; the discipline is in using it only to grade and tune, never to
+cheat.
+
+**Consequences.** `pdm detect` prints the scored ladder table on the live dataset.
+`signal_suspect` is available to F2.6's tuned models. The data-quality watcher is reused
+as an F5 drift signal. The autoencoder lives behind the optional `[deep]` extra; the
+cheap rungs (and the feature) run with zero extra dependencies, so CI stays offline and
+torch-free. 22 new offline tests (49 total green).

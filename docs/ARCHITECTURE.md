@@ -49,7 +49,10 @@ configs/dataset.json + pinned can-telemetry-forge
 |--------|----------------|
 | `config.py` | Paths, MLflow wiring, seeds, thresholds — one source of truth. |
 | `data.py` | Regenerate the full dataset from the canonical config (fixture fallback offline). |
-| `features.py` | Era-NULL handling, **leakage guard**, **unit-grouped** train/test split. |
+| `features.py` | Era-NULL handling, **leakage guard**, **unit-grouped** train/test split; optional `signal_suspect` feature. |
+| `detect.py` | F2.5 detection ladder (multivariate + temporal + autoencoder), signals-only suspicion per row. |
+| `detect_score.py` | Grade the ladder vs. ground-truth labels (the **only** place labels are read); tie-aware alarm budget. |
+| `suspect.py` | Combine the ladder → leakage-safe `signal_suspect` feature + a data-quality (forensic) watcher. |
 | `models.py` | LogReg baseline + LightGBM contender behind one `fit`/`predict_proba`. |
 | `train.py` | Train both, log to MLflow, return the winner by the primary metric. |
 | `registry.py` | Register + **metric-gated** stage→production promotion + rollback. |

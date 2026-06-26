@@ -112,12 +112,25 @@ def select_features(readings: pd.DataFrame) -> pd.DataFrame:
     return X
 
 
-def prepare(readings: pd.DataFrame, *, seed: int | None = None) -> Dataset:
+def prepare(
+    readings: pd.DataFrame,
+    *,
+    seed: int | None = None,
+    suspect_feature: bool = False,
+    suspect_use_autoencoder: bool = False,
+) -> Dataset:
     """Build the leakage-safe, unit-disjoint train/test split.
 
     Deterministic: the same ``readings`` + ``seed`` always yield the same split
     (the grouped splitter is seeded). ``seed`` defaults to
     :data:`config.DEFAULT_SEED`.
+
+    ``suspect_feature`` appends the F2.5 ``signal_suspect`` column (the detection
+    ladder's combined, **signal-derived** suspicion — :mod:`pdm_mlops.suspect`) to the
+    feature matrix so the classifier can learn to distrust suspect rows. It is computed
+    from signals only and re-passes :func:`assert_no_leakage`, so the leakage guard
+    stays intact. ``suspect_use_autoencoder`` folds the ``[deep]`` torch rung into that
+    score (off by default → no extra dependency).
     """
     if seed is None:
         seed = config.DEFAULT_SEED
@@ -127,6 +140,16 @@ def prepare(readings: pd.DataFrame, *, seed: int | None = None) -> Dataset:
             raise KeyError(f"readings is missing the required column {required!r}.")
 
     X = select_features(readings)
+    if suspect_feature:
+        # Local import: suspect → detect pull in sklearn/optional torch; keep the base
+        # feature path import-light and only wire the ladder when explicitly asked.
+        from . import suspect as _suspect
+
+        X = X.copy()
+        X[_suspect.SUSPECT_COLUMN] = _suspect.compute_suspect(
+            readings, seed=seed, use_autoencoder=suspect_use_autoencoder
+        )
+        assert_no_leakage(X)  # the augmented frame must still be label-free
     y = readings[config.TARGET].astype("int8")
     groups = readings[GROUP_COLUMN]
 
