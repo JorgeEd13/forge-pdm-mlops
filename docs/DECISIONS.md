@@ -88,3 +88,42 @@ The model is not the point; the pipeline around it is.
 in-process and MLflow against a tmp file backend, so CI needs no services. A future
 hosted deploy (Fly.io / Render / HF Spaces) is a stretch goal (F6), not required —
 the Actions run already demonstrates cloud execution.
+
+---
+
+## ADR-003 — Leakage-safe features: signals-only inputs, era-NULL kept, split BY UNIT
+
+**Date:** 2026-06-26 · **Phase:** F1 · **Status:** accepted
+
+**Context.** The generator's `readings` table carries, alongside the J1939 sensor
+signals and the `failure_within_h` target, several columns that *describe the failure
+itself* — `failure_mode`, `anomaly_type`, `is_outlier`. It also has era-gated
+missingness (whole units are NULL for sensors their era never had, e.g. EGT/DEF on a
+pre-emissions machine), and each unit's rows are an autocorrelated time series. Three
+ways to quietly get a dishonestly good score, so three deliberate guards.
+
+**Decision.**
+1. **Features are sensor signals only.** `features.FEATURE_COLUMNS` is the eight
+   J1939 channels. The target and the label-side bookkeeping (`failure_mode`,
+   `anomaly_type`, `is_outlier`) are listed in `LEAKY_COLUMNS` and **excluded** — they
+   are knowable only *because* the failure already occurred. `assert_no_leakage` runs
+   on every prepared frame and **raises** if any of them appears in `X`, so a future
+   rename/edit can't silently leak the answer (it's tested, not just documented).
+2. **Era-NULL missingness is preserved, not imputed.** The feature layer does **no**
+   imputation: NaN is a real, informative pattern (which sensor era a unit belongs
+   to). LightGBM consumes NaN natively; the LogReg pipeline imputes at *model* time
+   (F2), keeping the feature frame faithful to the source.
+3. **The train/test split is BY UNIT.** `GroupShuffleSplit` on `unit_id` (seeded,
+   `test_size=0.25` of *units*) so no unit appears in both sides. A random row split
+   would scatter one unit's autocorrelated series across the boundary and inflate the
+   score; grouping keeps generalization-to-new-machines honest. Disjointness is
+   asserted, not assumed.
+
+**Why.** All three are the difference between a number that looks good and a number
+that means something. The leakage guard and the unit-grouped split are exactly the
+"did you actually evaluate this honestly?" questions a reviewer asks of a PdM model;
+making them explicit, tested invariants is the portfolio point.
+
+**Consequences.** Determinism holds end to end: same `readings` + seed → same split →
+(F2) same metrics. Verified on the full regenerated dataset (134 units → 100 train /
+34 test, disjoint, comparable failure rates) and on the offline fixture in CI.

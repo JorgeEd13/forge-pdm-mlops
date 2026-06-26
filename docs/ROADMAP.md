@@ -6,8 +6,8 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 
 | Phase | Status | What |
 |------|--------|------|
-| **F0** | ◑ in progress | Foundations & runnable skeleton (package, `pdm` CLI, CI, committed smoke fixture, canonical dataset config) |
-| **F1** | ☐ | Data adapter (full regeneration + offline fixture fallback) + features (era-NULL handling, leakage guard, unit-grouped split) |
+| **F0** | ✅ done | Foundations & runnable skeleton (package, `pdm` CLI, CI, committed smoke fixture, canonical dataset config) |
+| **F1** | ✅ done | Data adapter (full regeneration + offline fixture fallback) + features (era-NULL handling, leakage guard, unit-grouped split) |
 | **F2** | ☐ | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
