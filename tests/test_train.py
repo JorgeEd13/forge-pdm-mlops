@@ -113,3 +113,44 @@ def test_degenerate_fixture_split_is_rejected(fixture_readings, tmp_tracking) ->
         train.train(
             seed=42, tracking_uri=tmp_tracking, readings=fixture_readings, register=False
         )
+
+
+# --- F2.6: tuned params + watchers flow through train() ---------------------
+
+
+def test_train_consumes_tuned_params_on_cleaned_frame(fixture_readings, tmp_tracking) -> None:
+    # Passing `tuned` overrides must (a) build the tuned models and (b) default to the
+    # cleaned frame (the tuner searched on it). A non-default override should change the
+    # logged params, proving it threaded through.
+    tuned = {"lightgbm": {"n_estimators": 150, "num_leaves": 20}}
+    summary = train.train(
+        seed=FIXTURE_SEED,
+        tracking_uri=tmp_tracking,
+        readings=fixture_readings,
+        register=False,
+        tuned=tuned,
+    )
+    assert len(summary.results) == 2
+    client = MlflowClient(tracking_uri=tmp_tracking)
+    exp = client.get_experiment_by_name(config.EXPERIMENT_NAME)
+    runs = {r.data.tags.get("mlflow.runName"): r for r in client.search_runs([exp.experiment_id])}
+    lgbm = runs["lightgbm"]
+    assert lgbm.data.params["n_estimators"] == "150"
+    assert lgbm.data.params["tuned"] == "True"
+    assert lgbm.data.params["cleaned_inputs"] == "True"
+
+
+def test_audit_raises_when_a_watcher_trips(monkeypatch, fixture_readings, tmp_tracking) -> None:
+    # Force the majority-baseline watcher to trip by pinning the test score to 0.5; with
+    # audit=True and strict semantics, train() must surface the FitAudit, not swallow it.
+    from pdm_mlops import diagnostics
+
+    monkeypatch.setattr(train, "_score", lambda model, ds: 0.5)
+    with pytest.raises(diagnostics.FitAudit):
+        train.train(
+            seed=FIXTURE_SEED,
+            tracking_uri=tmp_tracking,
+            readings=fixture_readings,
+            register=False,
+            audit=True,
+        )

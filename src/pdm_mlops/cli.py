@@ -4,6 +4,7 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
 
     pdm train     # F2  — train both models, log to MLflow, register the winner (LIVE)
     pdm detect    # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
+    pdm tune      # F2.6 — grouped-CV Optuna HPO on the cleaned inputs (LIVE)
     pdm serve     # F4  — FastAPI serving the promoted model
     pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
@@ -44,6 +45,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="track the runs but do not register the winner in the MLflow registry",
     )
+    train_p.add_argument(
+        "--tune",
+        action="store_true",
+        help="run the F2.6 grouped-CV HPO first and train on the tuned params (cleaned frame)",
+    )
+    train_p.add_argument(
+        "--audit",
+        action="store_true",
+        help="run the F2.6 training watchers (overfit-gap + majority-baseline), fail loud",
+    )
+    train_p.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="log the F2.6 diagnostic artifacts (importance/calibration/threshold/learning curve)",
+    )
+    train_p.add_argument(
+        "--clean",
+        action="store_true",
+        help="train on the F2.5-cleaned frame (the signal_suspect feature); implied by --tune",
+    )
+
+    tune_p = sub.add_parser(
+        "tune",
+        help="grouped-CV Optuna HPO on the cleaned inputs, tracked to MLflow (F2.6)",
+    )
+    tune_p.add_argument("--seed", type=int, default=None, help="seed threading data + search")
+    tune_p.add_argument(
+        "--trials", type=int, default=None, help="Optuna trials per model (default 40)"
+    )
+
     detect_p = sub.add_parser(
         "detect",
         help="run the outlier-detection ladder, scored vs. ground truth (F2.5)",
@@ -74,8 +105,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "train":
         from . import train as _train
 
-        summary = _train.train(seed=args.seed, register=not args.no_register)
+        tuned = None
+        if args.tune:
+            from . import tune as _tune
+
+            results = _tune.tune(seed=args.seed)
+            print(_tune.format_tune(results))
+            tuned = {name: r.best_params for name, r in results.items()}
+        summary = _train.train(
+            seed=args.seed,
+            register=not args.no_register,
+            tuned=tuned,
+            clean=True if args.clean else None,
+            audit=args.audit,
+            diagnose=args.diagnose,
+        )
         print(_train.format_summary(summary))
+        return 0
+    if args.command == "tune":
+        from . import tune as _tune
+
+        results = _tune.tune(seed=args.seed, n_trials=args.trials or _tune.DEFAULT_TRIALS)
+        print(_tune.format_tune(results))
         return 0
     if args.command == "detect":
         from . import data as _data

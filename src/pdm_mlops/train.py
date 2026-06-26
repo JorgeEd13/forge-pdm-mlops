@@ -93,6 +93,10 @@ def train(
     register: bool = True,
     readings: pd.DataFrame | None = None,
     load: Callable[..., pd.DataFrame] | None = None,
+    tuned: dict[str, dict[str, object]] | None = None,
+    clean: bool | None = None,
+    audit: bool = False,
+    diagnose: bool = False,
 ) -> TrainSummary:
     """Train every contender, track each to MLflow, and register the winner.
 
@@ -106,6 +110,17 @@ def train(
             fixture). When ``None``, the frame is obtained via ``load``.
         load: how to obtain ``readings`` when none is given — defaults to
             :func:`data.load_readings` (the full-regeneration real path, ADR-001).
+        tuned: F2.6 tuned ``overrides`` per model name (from :mod:`tune`); a model
+            with no entry trains at its baseline. When given, the cleaned F2.5 frame
+            is used by default (the tuner searched on it) unless ``clean`` says
+            otherwise.
+        clean: train on the F2.5-cleaned frame (``signal_suspect`` feature on). Defaults
+            to ``True`` when ``tuned`` is given (consistency with the search), else
+            ``False`` (the untuned F2 baseline frame).
+        audit: run the F2.6 training watchers (overfit-gap + majority-baseline) on each
+            fit and **raise** on a tripped one — the opt-in ``--audit`` guard.
+        diagnose: log the F2.6 diagnostic artifacts (importance, calibration, threshold
+            sweep, learning curve) to each model's MLflow run.
 
     Returns:
         A :class:`TrainSummary` with every run's score, the winner, and the
@@ -118,23 +133,40 @@ def train(
         tracking_uri = config.sqlite_tracking_uri(config.MLFLOW_DB)
     if readings is None:
         readings = (load or data.load_readings)()
+    if clean is None:
+        clean = tuned is not None
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(config.EXPERIMENT_NAME)
 
-    ds = features.prepare(readings, seed=seed)
+    ds = features.prepare(readings, seed=seed, suspect_feature=clean)
 
     results: list[RunResult] = []
-    for model in models.build_all(seed=seed):
+    for model in models.build_all(seed=seed, tuned=tuned):
         with mlflow.start_run(run_name=model.name) as run:
             mlflow.log_params(model.params)
             mlflow.log_param("seed", seed)
+            mlflow.log_param("cleaned_inputs", clean)
+            mlflow.log_param("tuned", bool(tuned and model.name in tuned))
             mlflow.log_param("n_train_units", ds.groups_train.nunique())
             mlflow.log_param("n_test_units", ds.groups_test.nunique())
             model.fit(ds.X_train, ds.y_train)
             metric = _score(model, ds)
             mlflow.log_metric(config.PRIMARY_METRIC, metric)
             _flavor_log_model(model, name="model")
+            if diagnose:
+                from . import diagnostics
+
+                diagnostics.log_diagnostics(model, ds)
+            if audit:
+                from . import diagnostics, tune
+
+                cv_auc = tune._grouped_cv_auc(model, ds)
+                report = diagnostics.audit_fit(
+                    model, ds, cv_auc=cv_auc, test_auc=metric, strict=True
+                )
+                mlflow.log_metric("cv_roc_auc", report.cv_auc)
+                mlflow.log_metric("train_roc_auc", report.train_auc)
             results.append(RunResult(name=model.name, metric=metric, run_id=run.info.run_id))
 
     # Winner = best primary metric; ties break on the fixed contender order (stable).

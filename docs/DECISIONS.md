@@ -17,8 +17,10 @@ must never end up with subtly different data).
 
 **Decision.**
 1. The generator is a **pinned optional dependency** (`[generate]` extra,
-   `can-telemetry-forge==0.1.0`). "Same config" only reproduces if the generator
-   version matches too, so the version is pinned, not floating.
+   `can-telemetry-forge==0.2.0`). "Same config" only reproduces if the generator
+   version matches too, so the version is pinned, not floating. (Bumped 0.1.0 → 0.2.0
+   when the generator's ADR-020 added progressive pre-failure degradation, changing the
+   data — a deliberate, pinned refresh; the fixture below was rebuilt against it.)
 2. [`configs/dataset.json`](../configs/dataset.json) is the **single cross-machine
    source of truth** for the training dataset (seed, window, resolution, label
    horizon). Both machines regenerate the **full** dataset from this file + the
@@ -267,3 +269,68 @@ cheat.
 as an F5 drift signal. The autoencoder lives behind the optional `[deep]` extra; the
 cheap rungs (and the feature) run with zero extra dependencies, so CI stays offline and
 torch-free. 22 new offline tests (49 total green).
+
+---
+
+## ADR-006 — Tune & diagnose: a unit-grouped Optuna study on the cleaned frame, diagnostics-as-artifacts, training watchers — instrumentation over accuracy
+
+**Date:** 2026-06-26 · **Phase:** F2.6 · **Status:** accepted
+
+**Context.** F2 picks a winner on a recorded metric; F2.5 cleans the inputs and ships a
+`signal_suspect` feature. F2.6 closes the modelling loop by making **"why this model,
+with these params"** *visible and defensible* — a tracked search, inspectable diagnostics,
+and guards that fail loud on a misleading fit. The hard honesty caveat is stated up front:
+on this synthetic data the score is **faint by design** (~0.547 AUC at F2), and neither
+cleaning nor HPO moves it much. So F2.6 is explicitly **not an accuracy play** — the
+portfolio value is the *process and the instrumentation*, not the number.
+
+**Decision.**
+
+1. **HPO = a seeded Optuna study, scored by unit-grouped CV** (`tune.py`). One study per
+   contender (`models.BUILDERS`) over a restricted, declared tunable space
+   (`LOGREG_TUNABLE` = `C`; `LIGHTGBM_TUNABLE` = tree budget + regularisation). The
+   objective is the **mean ROC-AUC across `GroupKFold` folds of the *training* split** —
+   whole units held out per fold, never a row, so the tuner **cannot leak a unit across
+   folds and undo ADR-003**. The held-out test split is never seen by the search, so HPO
+   never tunes against the number F2/F3 reports. The search runs on the **F2.5-cleaned
+   frame** (`features.prepare(suspect_feature=True)`) so `signal_suspect` is in the matrix
+   being optimised. Each study is logged to MLflow under a dedicated `-tune` experiment;
+   tuned params feed `train(tuned=…)`. New `[tune]` extra (`optuna`, `matplotlib`).
+
+2. **Tuned params are restricted overrides, validated, defaulting to the F2 baseline.**
+   `build_logreg`/`build_lightgbm` take an `overrides` dict whose keys must be in the
+   model's tunable set (`_check_overrides` **raises** on an unknown key rather than
+   silently dropping it). With no overrides each builder is the **untuned F2 model
+   exactly** — so F2 stays reproducible and F2.6 is a strict, legible superset.
+
+3. **Diagnostics are artifacts, not just scalars** (`diagnostics.log_diagnostics`). Per
+   fitted model: feature importance (LightGBM gain / LogReg `|coef|` — `signal_suspect`
+   should rank), a calibration check, a precision/recall **threshold sweep**, and a cheap
+   **learning curve**. Each is written as a **CSV always** (numeric, reproducible,
+   CI-light) and a **PNG when matplotlib is present**. matplotlib is therefore an *optional
+   nicety*: absent, the numeric CSVs still land, so diagnostics never become a hard
+   dependency and CI stays light.
+
+4. **Training watchers — the forensic-watcher pattern, opt-in `--audit`**
+   (`diagnostics.audit_fit`). Two cheap guards that fail **loud** rather than let a
+   misleading fit through: an **overfit-gap** guard (train − grouped-CV AUC over
+   `OVERFIT_GAP_LIMIT` = 0.15 → the model memorised its train units) and a
+   **majority-baseline** guard (test AUC must beat the trivial 0.5 majority-class
+   predictor by a margin). They return a structured `AuditReport` and **raise `FitAudit`**
+   in strict mode. `DegenerateSplit` (F2) is the third watcher in this family. Off by
+   default so a normal `pdm train` is unchanged; `--audit` turns the loud guards on.
+
+**Why.** The questions a reviewer asks of a tuned model are exactly these: *did the search
+leak units? did you tune against the test set? is the model better than guessing, or just
+overfit? what is it actually keying on?* F2.6 answers each as a **tested, tracked
+invariant** — grouped-CV in the objective, the test split untouched, two watchers that
+raise, and importance/calibration/threshold artifacts on every run — instead of asserting
+"I tuned it." On synthetic data where the score can't impress, *that visible discipline is
+the deliverable.*
+
+**Consequences.** `pdm tune` produces a tracked Optuna study per model with grouped CV;
+`pdm train --tune` chains the search into a tuned, cleaned-frame training run;
+`pdm train --audit`/`--diagnose` add the guards/artifacts. The search is deterministic
+(seeded TPE + order-deterministic `GroupKFold` → same best params). The `[tune]` extra is
+optional and out of core CI (which trains untuned on the fixture); matplotlib is optional
+within it. F3 builds gated promotion on the registered winner — tuned or not.

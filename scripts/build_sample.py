@@ -47,6 +47,7 @@ KEEP_COLUMNS = [
     "boost_pressure_kpa",
     "egt_c",
     "def_level_pct",
+    "vibration_mms",
     "failure_within_h",
     "failure_mode",
     "anomaly_type",

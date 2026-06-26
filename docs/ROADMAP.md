@@ -10,7 +10,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F1** | ✅ done | Data adapter (full regeneration + offline fixture fallback) + features (era-NULL handling, leakage guard, unit-grouped split) |
 | **F2** | ✅ done | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
 | **F2.5** | ✅ done | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder ladder on signals, scored vs. ground truth (AE earns its place; temporal rewritten after a logged negative result) → a leakage-safe `signal_suspect` feature + a data-quality watcher |
-| **F2.6** | ☐ | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
+| **F2.6** | ✅ done | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
@@ -116,9 +116,17 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
     guard (test AUC must beat the majority class). Opt-in `--audit`.
   - **ADR-006** — HPO method (Optuna + grouped CV), the diagnostics set, the watcher
     policy, the honesty note (instrumentation over accuracy on synthetic data).
-- **DoD.** `pdm tune` produces a tracked Optuna study with grouped CV; diagnostics land
+- **DoD.** ✅ `pdm tune` produces a tracked Optuna study with grouped CV; diagnostics land
   as MLflow artifacts; the overfit-gap + majority-baseline watchers fire in a test;
   tuned params reproduce (same seed → same best params).
+- **Shipped.** `tune.py` (grouped-CV Optuna study per model, cleaned frame, tracked),
+  `diagnostics.py` (importance/calibration/threshold/learning-curve artifacts + the
+  overfit-gap & majority-baseline watchers), validated `overrides` on the model builders,
+  `pdm tune` + `pdm train --tune/--audit/--diagnose/--clean`, the `[tune]` extra, ADR-006.
+  An honest finding kept: on the 15-unit smoke fixture the deep model genuinely overfits
+  (train ≈1.0 vs. grouped-CV ≈0.6), so the overfit watcher **trips** — that is the guard
+  earning its keep (a fixture-size artifact, like `DegenerateSplit`), tested as such. 14
+  new offline tests (63 total green).
 
 ## F3 — Registry + promotion
 

@@ -4,6 +4,51 @@ Updated: 2026-06-26
 
 ## Current focus
 
+**Data realism refresh — generator `can-telemetry-forge` 0.1.0 → 0.2.0 (cross-repo).**
+Consuming the generator exposed that its failures had **no temporal signature** (a
+failing unit's pre-failure rows were identical to its healthy rows), so a per-row model
+scored ≈ 0.55 *by construction* — not for lack of modelling effort here. Fixed **in the
+generator** (its ADR-020: a progressive pre-failure degradation ramp), not by tuning the
+model against the data. Two changes landed on this side: (1) the `[generate]` pin moved
+to `==0.2.0` and the committed smoke fixture was **rebuilt** against it; (2) `vibration_mms`
+(the bearing signature, era-gated, previously unused) was added to `features.FEATURE_COLUMNS`
+— it also flows into `detect.SIGNAL_COLUMNS` automatically. **Measured on a regenerated
+dataset: ≈ 0.55 → 0.73 (ramp alone) → ≈ 0.82 (with vibration).** Two generator hazard
+rebalances were prototyped, scored, and **rejected** (neither beat the ramp; logged in the
+generator's ADR-020). The earlier "score is faint by design / ~0.55" framing in F2/F2.5/F2.6
+is now **superseded** — the score is a real ≈ 0.82, earned from raw sensors with the
+leakage guards intact. (F2–F2.6 process/instrumentation claims are unchanged and now sit on
+honestly-learnable data.) Re-run `pdm train` to refresh the registered metrics.
+
+**F2.6 (Tune + diagnose — instrumentation) — DONE.** On the F2.5-**cleaned** inputs
+(`features.prepare(suspect_feature=True)`), "why this model, with these params" is now
+**visible, tracked, and guarded** — deliberately *not* an accuracy play (the synthetic
+score stays ~0.55 AUC; ADR-006). Three pieces:
+
+- **HPO (`tune.py`)** — one seeded **Optuna** study per contender over a *restricted,
+  declared* tunable space (`models.LOGREG_TUNABLE`/`LIGHTGBM_TUNABLE`), scored by
+  **unit-grouped `GroupKFold`** on the *training* split only, so the search can't leak a
+  unit across folds (ADR-003 holds) and never tunes against the reported test number.
+  Tracked to a `-tune` MLflow experiment; `pdm tune` runs it; tuned params feed
+  `train(tuned=…)`. New `[tune]` extra (`optuna` + optional `matplotlib`).
+- **Diagnostics (`diagnostics.log_diagnostics`)** — per fitted model, **artifacts** on its
+  MLflow run: feature importance (`signal_suspect` ranks), calibration, a precision/recall
+  threshold sweep, a learning curve. **CSV always** (CI-light, reproducible) + **PNG when
+  matplotlib is present** — matplotlib is an optional nicety, never a hard dep.
+- **Training watchers (`diagnostics.audit_fit`, opt-in `--audit`)** — the forensic-watcher
+  pattern: an **overfit-gap** guard (train − grouped-CV AUC > 0.15) and a
+  **majority-baseline** guard (test AUC must beat 0.5). Raise `FitAudit` in strict mode.
+  `DegenerateSplit` (F2) is the third in this family.
+
+**An honest finding, kept (not hidden).** On the **15-unit smoke fixture** the deep
+LightGBM legitimately overfits — train AUC ≈ 1.0 vs. grouped-CV ≈ 0.60 → the overfit-gap
+watcher **trips**. That is the watcher *earning its keep*, not a bug: grouped CV on so few
+units is pessimistic by construction (the same fixture-size artifact ADR-004 records for
+`DegenerateSplit`). A dedicated test asserts the trip on the fixture; the watcher's *pass*
+path is tested on a shallow/regularised fit; the honest setting is the full 100-unit
+dataset. **`pdm train --tune --audit --diagnose` chains all three live.** **63 tests green
+offline** (49 from F0–F2.5 + 14 new). ADR-006.
+
 **F2.5 (Outlier robustness — clean first) — DONE.** A three-rung detection ladder
 (`detect.py`) — multivariate (IsolationForest + robust Mahalanobis), temporal
 (exact-value freeze runs + sustained monotone creep, with the detectable signals chosen
@@ -134,31 +179,48 @@ runnable skeleton — closed at an earlier boundary.)
   absent family, loud on missing labels), `test_suspect.py` (6: feature leakage-safe,
   `prepare` wiring, determinism, watcher fires + strict raises). **49 total green.**
 
+### F2.6 — Tune + diagnose (2026-06-26)
+
+- **`tune.py`** — `tune_model` runs a seeded **Optuna** study per contender over its
+  restricted tunable space, objective = mean ROC-AUC over **unit-grouped `GroupKFold`**
+  folds of the *training* split (single-class folds skipped; all-degenerate → `nan` →
+  pruned). `tune` prepares the **cleaned** frame (`suspect_feature=True`), runs both
+  studies, logs each to a `-tune` MLflow experiment, returns `{name: TuneResult}`.
+  `DEFAULT_TRIALS=40`. The test split is never seen by the search.
+- **`models.py`** — `build_logreg`/`build_lightgbm` take validated `overrides`
+  (`_check_overrides` raises on an unknown key); with none they are the F2 baseline
+  exactly. `BUILDERS` (name→builder) + `build_all(tuned=…)` feed tuned params by name.
+- **`diagnostics.py`** — `log_diagnostics` writes feature-importance / calibration /
+  threshold-sweep / learning-curve **artifacts** (CSV always + PNG if matplotlib) to the
+  active run. `audit_fit` = overfit-gap (`OVERFIT_GAP_LIMIT=0.15`) + majority-baseline
+  (`MAJORITY_AUC=0.5`) watchers → `AuditReport`, raise `FitAudit` in strict mode.
+- **`train.py`** — gained `tuned=` / `clean=` (cleaned frame; defaults on when `tuned`
+  given) / `audit=` (strict watchers) / `diagnose=` (artifacts); logs `cleaned_inputs`,
+  `tuned`, and the audit's `cv_roc_auc`/`train_roc_auc`.
+- **`cli.py`** — `pdm tune` (`--seed`, `--trials`) live; `pdm train` gained `--tune`
+  (search then train tuned+cleaned), `--audit`, `--diagnose`, `--clean`.
+- **`[tune]` extra** (`optuna` + optional `matplotlib`), out of core CI. **ADR-006.**
+- **Tests** — `test_tune.py` (6: grouped CV never shares a unit, only-tunable params,
+  tuned params build a model, determinism, one tracked run/model, searches the cleaned
+  frame), `test_diagnostics.py` (7: importance ranks `signal_suspect`, artifacts land,
+  watcher pass-path on a shallow fit, **fixture deep-fit trips overfit by design**,
+  majority watcher fires + strict raises), + 2 in `test_train.py` (tuned params thread
+  through on the cleaned frame; `--audit` raises). **63 total green.**
+
 ## Next step (concrete)
 
-**F2.6 — Tune + diagnose (instrumentation).** On the **cleaned** F2.5 inputs (train with
-`features.prepare(suspect_feature=True)` so `signal_suspect` is in the matrix), make
-"why this model, with these params" visible and defensible. **Not** an accuracy play —
-on this synthetic data the score is faint by design; the value is the tracked search +
-diagnostics + guards.
+**F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
+already writes to. `registry.py`: register the winner, **stage→production promotion gated
+by the eval metric**, and rollback. DoD: a *worse* candidate does **not** promote
+(asserted); rollback restores the prior production version. ADR-007 (promotion gate).
+Build it on the SQLite-backed registry (ADR-004) and the tuned winner F2.6 can now
+produce. Tests stay offline (tmp SQLite, the fixture).
 
-- **HPO (`tune.py`)** — an **Optuna** study (small budget ~30–50 trials, seeded) over
-  each model's param space, scored by **unit-grouped CV** (`GroupKFold`) so the search
-  can't leak units across folds and undo ADR-003. Logged to MLflow; `pdm tune` runs it;
-  tuned params feed `train`. New `[tune]` extra (`optuna`).
-- **Diagnostics** — per fitted model, log to its MLflow run: a learning curve, feature
-  importance (LightGBM gain / LogReg |coef| — `signal_suspect` should rank), a
-  calibration check, and a precision/recall threshold sweep. Artifacts, not just scalars.
-- **Training watchers** (forensic pattern): `DegenerateSplit` (shipped F2), an
-  **overfit-gap** guard (train − CV AUC over a threshold), and a **majority-baseline**
-  guard (test AUC must beat the majority class). Opt-in `--audit`.
-- **ADR-006** — HPO method, the diagnostics set, the watcher policy, the honesty note.
+**Honesty note (carries forward):** neither F2.5 cleaning nor F2.6 HPO moved the ~0.55
+AUC much on this synthetic data — by design. The value across F2–F2.6 is the *visible,
+ground-truth-scored process + the guards*, not accuracy.
 
-**Honesty note:** neither F2.5 cleaning nor F2.6 HPO will move the ~0.547 AUC much on
-this synthetic data — the value is the *visible, ground-truth-scored process + the
-guards*, not accuracy.
-
-One phase per session — F2.5 closes at this boundary for review before F2.6 starts.
+One phase per session — F2.6 closes at this boundary for review before F3 starts.
 
 ## Notes
 
