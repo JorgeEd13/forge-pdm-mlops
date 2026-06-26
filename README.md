@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F2%20%E2%80%94%20train%20%2B%20track-yellow" alt="Status: F2 — train + track">
+  <img src="https://img.shields.io/badge/status-F2.5%20%E2%80%94%20outlier%20robustness-yellow" alt="Status: F2.5 — outlier robustness">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
   <img src="https://img.shields.io/badge/serving-FastAPI-009688" alt="FastAPI">
@@ -45,12 +45,13 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F2 (train + track, the MVP core).** F0 (runnable skeleton) and
-> F1 (real data layer + leakage-safe features) are in place. **F2 adds the training
-> core**: `pdm train` runs a **two-model comparison** (LogReg + LightGBM), logs **both**
-> to **MLflow** (params + ROC-AUC + the fitted model), and **registers** the winner —
-> model selection as an MLOps process (see [the section below](#model-selection-as-an-mlops-process-f2)).
-> `serve`, the registry promotion gate, and the drift loop land across F3–F5 — see
+> ⚠️ **Honest status — F2.5 (outlier robustness).** F0 (skeleton), F1 (real data layer
+> + leakage-safe features) and **F2 (the training core — `pdm train` runs a two-model
+> comparison and registers the winner in MLflow)** are in place. **F2.5 adds outlier
+> robustness**: an unsupervised detection ladder **scored against the generator's
+> ground-truth labels**, turned into a leakage-safe `signal_suspect` feature (see [the
+> section below](#outlier-robustness-scored-against-ground-truth-f25)). `serve`, the
+> registry promotion gate, and the drift loop land across F3–F5 — see
 > [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a live production
 > deployment; the drift→retrain loop, once shipped, is a **demonstrated closed loop on
 > synthetic data**.
@@ -114,6 +115,40 @@ pdm train                 # full dataset (needs the [generate] extra); SQLite-tr
 pdm train --no-register   # compare + track without touching the registry
 ```
 
+## Outlier robustness, scored against ground truth (F2.5)
+
+The generator injects nine defect families on purpose — some **obvious** (a signal out
+of range), most **subtle** (a `joint_outlier` where each signal is plausible but the
+*combination* isn't; a `sensor_stuck` that freezes in range; a slow `sensor_drift`). A
+serious PdM pipeline has to survive these, and cleaning belongs *before* tuning. So
+F2.5 is a **detection ladder, every rung scored against the generator's labels**
+([`detect.py`](src/pdm_mlops/detect.py), [`detect_score.py`](src/pdm_mlops/detect_score.py)):
+
+- **Multivariate** — `IsolationForest` + a robust-covariance **Mahalanobis** distance,
+  for the joint outlier a per-column check misses.
+- **Temporal** — `sensor_stuck` / `sensor_drift`. The first rolling-variance/slope
+  version **scored ~0.02 F1 and flagged 85% of rows** — useless. The diagnosis was the
+  fix: a stuck sensor isn't "low variance" (a running engine's other signals drown it),
+  it's **one signal repeating its exact value**; the rewrite (with the detectable
+  signals chosen *unsupervised* at fit time) reaches ~0.59 stuck recall at ~0.64
+  precision. The negative result is documented, not hidden ([ADR-005](docs/DECISIONS.md)).
+- **Autoencoder** — a small CPU-only PyTorch AE (optional `[deep]` extra, kept out of
+  core CI). It has to **earn its place**, scored head-to-head with the cheap rungs — and
+  it does (best overall, beats them on subtle recall).
+
+**The honesty rule:** detectors run on the **signals only**; the `is_outlier` /
+`anomaly_type` labels are read in exactly one place — the scoring harness — to *grade*
+the detectors and *tune* thresholds, **never** as a detector input or a model feature
+(the F1 leakage guard stays sacred, asserted by test). The output is a **leakage-safe
+`signal_suspect` feature** ([`suspect.py`](src/pdm_mlops/suspect.py)) the downstream
+model can use, plus a **data-quality watcher** that fails loud when a batch's outlier
+rate spikes (it doubles as an F5 drift signal).
+
+```bash
+pdm detect                # run the ladder on the full dataset, print the scored table
+pdm detect --autoencoder  # include the [deep] torch rung
+```
+
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
@@ -146,10 +181,11 @@ pip install -e .[generate]
 The `pdm` CLI surface (subcommands fill in by phase):
 
 ```bash
-pdm train             # F2 — train both models, track to MLflow, register the winner (LIVE)
-pdm serve             # F4 — FastAPI serving the promoted model
+pdm train             # F2   — train both models, track to MLflow, register the winner (LIVE)
+pdm detect            # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
+pdm serve             # F4   — FastAPI serving the promoted model
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
-pdm monitor           # F5 — an Evidently drift report
+pdm monitor           # F5   — an Evidently drift report
 ```
 
 ## Roadmap
@@ -159,7 +195,7 @@ pdm monitor           # F5 — an Evidently drift report
 | **F0** | Foundations & runnable skeleton (package, CLI, CI, canonical config, smoke fixture) ✅ |
 | **F1** | Data adapter (full regeneration + offline fallback) + leakage-safe features ✅ |
 | **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ✅ |
-| **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ☐ |
+| **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ✅ |
 | **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ☐ |
 | **F3** | Model registry — gated stage→production promotion + rollback ☐ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
