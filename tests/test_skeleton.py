@@ -22,10 +22,10 @@ def test_cli_no_args_prints_help_and_succeeds(capsys) -> None:
     assert "pdm" in out
 
 
-def test_cli_subcommands_are_stubbed_until_their_phase(capsys) -> None:
-    # Every subcommand is wired in the parser but honestly reports "not yet"
-    # until its phase lands, so the surface is visible without faking capability.
-    for cmd in ("train", "serve", "flow", "monitor"):
+def test_unimplemented_subcommands_are_honestly_stubbed(capsys) -> None:
+    # Subcommands whose phase hasn't landed report "not yet" rather than faking
+    # capability (`train` went live in F2 and is covered by test_train.py).
+    for cmd in ("serve", "flow", "monitor"):
         assert main([cmd]) == 2
         err = capsys.readouterr().err
         assert "Not implemented yet" in err

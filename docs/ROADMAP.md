@@ -8,7 +8,9 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 |------|--------|------|
 | **F0** | ✅ done | Foundations & runnable skeleton (package, `pdm` CLI, CI, committed smoke fixture, canonical dataset config) |
 | **F1** | ✅ done | Data adapter (full regeneration + offline fixture fallback) + features (era-NULL handling, leakage guard, unit-grouped split) |
-| **F2** | ☐ | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
+| **F2** | ✅ done | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
+| **F2.5** | ☐ | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels (obvious vs. subtle recall), → a leakage-safe `signal_suspect` feature + a data-quality watcher |
+| **F2.6** | ☐ | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
@@ -43,15 +45,79 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 - **How.** `models.py` (LogReg pipeline + LightGBM behind one `fit/predict_proba`
   interface). `train.py` logs **both** as MLflow runs (params, the primary metric,
   the model artifact) and returns the winner. `pdm train` works against a local
-  file MLflow backend. ADR-003 (two-model comparison).
-- **DoD.** `pdm train` produces two tracked runs + a registered winner; a
-  same-seed-same-metric determinism test.
+  SQLite MLflow backend (ADR-004 — the file store is in maintenance mode in MLflow 3).
+- **DoD.** ✅ `pdm train` produces two tracked runs + a registered winner; a
+  same-seed-same-metric determinism test; a `DegenerateSplit` guard for the fixture.
+
+## F2.5 — Outlier robustness (clean first)
+
+- **Objective.** Make the pipeline robust to the **dirty inputs the generator injects
+  on purpose** — and *prove* it against ground truth. The generator labels nine defect
+  families split into **obvious** (`obvious_outlier` — a range spike) and **subtle**
+  (`joint_outlier`: each signal plausible, the *combination* implausible; `sensor_stuck`:
+  in-range but frozen; `sensor_drift`: slow creep; the `can_frame_*` faults). A serious
+  PdM model has to survive these; cleaning *before* tuning is the right ML order (F2.6
+  tunes on the cleaned frame). **This pillar is only measurable because the generator
+  labels the outliers** — the two repos tell one story.
+- **The hard honesty rule.** Detection runs on the **feature signals ONLY**; the
+  `is_outlier`/`anomaly_type` labels are used **solely to *score*** the detector, never
+  as a model input (the F1 leakage guard, ADR-003, stays sacred). Robustness is earned
+  from raw signals exactly as it would be in production.
+- **How — a detection ladder, each rung scored vs. ground truth:**
+  - **Multivariate (joint outliers).** `IsolationForest` + a robust-covariance
+    **Mahalanobis** distance over the signals — catches "this *combination* is
+    implausible" (700 rpm at 95% load), which per-column checks miss.
+  - **Temporal (stuck/drift).** Per-unit rolling features (rolling variance → ~0 =
+    stuck; rolling slope → steady nonzero = drift). Thresholds are a **domain call made
+    with Jorge** against the labeled data, not auto-picked.
+  - **Autoencoder (the adaptive headline, Jorge's call to include now).** A small
+    CPU-only PyTorch autoencoder trained on *normal* joint+temporal patterns;
+    reconstruction error = suspicion, so it can flag patterns we never explicitly
+    designed for. Seeded/deterministic; new `[deep]` extra (CPU torch), **kept out of
+    core CI**. It must **earn its place**: scored against ground truth like the cheaper
+    rungs, and we report whether it measurably beats them on *subtle* recall — if it
+    doesn't, that's documented honestly, not hidden.
+  - **Output: a leakage-safe `signal_suspect` feature.** The detectors' (label-free)
+    suspicion score becomes a new model feature so the downstream classifier can learn
+    to distrust suspect values. Plus a **data-quality watcher** that fails loud if a
+    batch's outlier rate spikes (doubles as an F5 drift signal).
+  - **ADR-005** — the detection ladder, the signals-only/score-only honesty rule, the
+    cleaning policy (`signal_suspect` feature), and the autoencoder "earn-its-place"
+    decision + result.
+- **DoD.** A reported, ground-truth-scored detection table (recall on **obvious vs.
+  each subtle family**, detector by detector); the autoencoder compared head-to-head
+  with the cheap methods on subtle recall; a leakage-safe `signal_suspect` feature that
+  the leakage guard still passes; the data-quality watcher fires in a test; everything
+  seeded/deterministic and offline on the fixture.
+
+## F2.6 — Tune + diagnose (instrumentation)
+
+- **Objective.** On the **cleaned** inputs from F2.5, make "why this model, with these
+  params" **visible and defensible**, not asserted — and instrument training so a bad
+  fit fails loud. *Not* an accuracy play: on this synthetic data the score is faint by
+  design; the value is the tracked search + diagnostics + guards.
+- **How.**
+  - **HPO (`tune.py`).** An **Optuna** study (small budget, ~30–50 trials, seeded)
+    over each model's param space, scored by **unit-grouped CV** (`GroupKFold`) so the
+    search can't leak units across folds and undo ADR-003. Logged to MLflow; `pdm tune`
+    runs it; tuned params feed `train`. New `[tune]` extra (`optuna`).
+  - **Diagnostics.** Per fitted model, log to its MLflow run: a learning curve, feature
+    importance (LightGBM gain / LogReg |coef|), a calibration check, and a threshold
+    sweep (precision/recall vs. threshold). Artifacts, not just scalars.
+  - **Training watchers** (forensic-watcher pattern): `DegenerateSplit` (shipped), an
+    **overfit-gap** guard (train − CV AUC over a threshold), and a **majority-baseline**
+    guard (test AUC must beat the majority class). Opt-in `--audit`.
+  - **ADR-006** — HPO method (Optuna + grouped CV), the diagnostics set, the watcher
+    policy, the honesty note (instrumentation over accuracy on synthetic data).
+- **DoD.** `pdm tune` produces a tracked Optuna study with grouped CV; diagnostics land
+  as MLflow artifacts; the overfit-gap + majority-baseline watchers fire in a test;
+  tuned params reproduce (same seed → same best params).
 
 ## F3 — Registry + promotion
 
 - **Objective.** Governed model lifecycle.
 - **How.** `registry.py`: register the winner, **stage→production promotion gated by
-  the eval metric**, rollback. ADR-004 (promotion gate).
+  the eval metric**, rollback. ADR-007 (promotion gate).
 - **DoD.** A worse candidate does **not** promote (asserted); rollback restores the
   prior production version.
 
@@ -71,7 +137,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
   a drift decision). `flows.py` Prefect flow `detect_drift → [if drift] →
   retrain(compare) → evaluate → promote-or-hold`, tasks with retries.
   `.github/workflows/retrain.yml` runs it on a schedule on cloud runners.
-  ADR-005 (drift metric + retrain trigger policy). DEMO.md + a GIF.
+  ADR-008 (drift metric + retrain trigger policy). DEMO.md + a GIF.
 - **DoD.** Flow runs **in-process** in tests on the fixture; the drift branch fires
   and a model is promoted; the scheduled workflow is wired.
 

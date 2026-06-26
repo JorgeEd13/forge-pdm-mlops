@@ -37,11 +37,21 @@ DEFAULT_SEED: int = 42
 
 # --- MLflow -----------------------------------------------------------------
 
-#: Local file-based tracking + registry backend (no server, no paid service).
-#: Overridable via the ``MLFLOW_TRACKING_URI`` env var that MLflow reads natively.
+#: Local backend, no server / no paid service (ADR-002). MLflow 3 put the bare
+#: ``./mlruns`` *file store* into maintenance mode, so tracking + the model registry
+#: use a local **SQLite** database (still just a file on disk, no daemon), while model
+#: artifacts are written to a plain ``mlartifacts/`` directory. Both are git-ignored
+#: and fully reproducible from a seed.
 MLRUNS_DIR: Path = REPO_ROOT / "mlruns"
+MLFLOW_DB: Path = MLRUNS_DIR / "mlflow.db"
+MLFLOW_ARTIFACTS_DIR: Path = REPO_ROOT / "mlartifacts"
 EXPERIMENT_NAME: str = "forge-pdm-failure"
 REGISTERED_MODEL_NAME: str = "forge-pdm-failure-classifier"
+
+
+def sqlite_tracking_uri(db_path: Path) -> str:
+    """A SQLite MLflow tracking URI for ``db_path`` (server-free local backend)."""
+    return f"sqlite:///{db_path.as_posix()}"
 
 # --- Modelling --------------------------------------------------------------
 

@@ -127,3 +127,52 @@ making them explicit, tested invariants is the portfolio point.
 **Consequences.** Determinism holds end to end: same `readings` + seed → same split →
 (F2) same metrics. Verified on the full regenerated dataset (134 units → 100 train /
 34 test, disjoint, comparable failure rates) and on the offline fixture in CI.
+
+---
+
+## ADR-004 — Train as a tracked two-model comparison; local **SQLite** MLflow backend; cloudpickle sklearn artifacts
+
+**Date:** 2026-06-26 · **Phase:** F2 · **Status:** accepted
+
+**Context.** F2 is the MVP core. The point is **not** a good model — it is to show
+*model selection as an MLOps process*: two candidates, both tracked, the winner chosen
+on a recorded metric and registered, all reproducible. Three concrete choices fell out
+of building it on MLflow 3.
+
+**Decision.**
+1. **Two contenders behind one interface, compared through MLflow.** `models.py`
+   exposes a `LogisticRegression` pipeline (median-impute → scale → logreg) and a
+   `LGBMClassifier`, both as a `Model` with the same `fit`/`predict_proba`.
+   Imputation lives **in the LogReg pipeline**, not the feature layer, so era-NULL
+   stays intact upstream (ADR-003) and only the model that needs it fills it; LightGBM
+   sees the NaN natively. `train.py` loops over both, opens an **MLflow run** each
+   (params + the primary metric + the fitted model artifact), picks the best
+   `roc_auc`, and **registers** it. "Which model is current and on what evidence" is
+   recorded, not folklore.
+2. **The local backend is SQLite, not the bare file store.** ADR-002 promised a
+   server-free, cost-free local backend. MLflow 3 put the `./mlruns` *file store* into
+   maintenance mode (it raises unless `MLFLOW_ALLOW_FILE_STORE=true`). Rather than
+   opt back into a deprecated path, tracking + the **model registry** use a local
+   **SQLite** DB (`mlruns/mlflow.db`) with a plain `mlartifacts/` artifact dir — still
+   just files on disk, no daemon, no service. Tests point it at a tmp SQLite URI.
+3. **sklearn artifacts are logged with cloudpickle.** MLflow 3's newer `skops`
+   default refuses to serialise the LogReg pipeline (it flags `numpy.dtype` as an
+   untrusted type). The sklearn flavor is pinned to `SERIALIZATION_FORMAT_CLOUDPICKLE`,
+   which round-trips the full `Pipeline` faithfully for our own reload.
+
+**A real guard that surfaced here — `DegenerateSplit`.** On the *full* dataset the
+unit-grouped split is class-rich on both sides. On the tiny **smoke fixture**, holding
+out a few units by group can land an **all-negative** test set, where ROC-AUC is
+genuinely undefined. `train._score` **raises `DegenerateSplit`** instead of logging a
+meaningless `nan` (which would also collide on a SQLite UNIQUE constraint in the
+registry). The fixture's F2 tests use a seed whose split is two-class; one test asserts
+the guard fires on the degenerate seed. This is a fixture-only artifact, not a
+production one — but failing loudly beats a silent `nan`.
+
+**Why.** All three keep the project's promises intact under a newer MLflow: honest
+local-first MLOps (SQLite is still server-free), a faithful artifact round-trip, and a
+metric that is either real or an explicit error — never a silent `nan`.
+
+**Consequences.** `pdm train` produces **two tracked runs + a registered winner** and
+is deterministic (same seed → same metrics). The backend is a single SQLite file +
+an artifact dir, both git-ignored. F3 builds promotion/rollback on this same registry.

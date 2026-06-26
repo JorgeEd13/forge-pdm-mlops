@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F1%20%E2%80%94%20data%20%2B%20features-yellow" alt="Status: F1 — data + features">
+  <img src="https://img.shields.io/badge/status-F2%20%E2%80%94%20train%20%2B%20track-yellow" alt="Status: F2 — train + track">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
   <img src="https://img.shields.io/badge/serving-FastAPI-009688" alt="FastAPI">
@@ -45,16 +45,15 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F1 (data + leakage-safe features).** The runnable skeleton
-> (F0) is in place — importable package, a `pdm` CLI whose subcommands are **honestly
-> stubbed** until their phase lands, green CI on Linux + Windows × Python 3.11/3.12,
-> the canonical dataset config, and a committed offline smoke fixture. **F1 adds the
-> real data layer**: full-dataset regeneration from the canonical config (with a loud
-> fallback to the offline fixture) and a **leakage-safe feature pipeline** — see
-> [the section below](#honest-evaluation-baked-in-f1). Training, registry, serving and
-> the drift loop land across F2–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing
-> here implies a live production deployment; the drift→retrain loop, once shipped, is a
-> **demonstrated closed loop on synthetic data**.
+> ⚠️ **Honest status — F2 (train + track, the MVP core).** F0 (runnable skeleton) and
+> F1 (real data layer + leakage-safe features) are in place. **F2 adds the training
+> core**: `pdm train` runs a **two-model comparison** (LogReg + LightGBM), logs **both**
+> to **MLflow** (params + ROC-AUC + the fitted model), and **registers** the winner —
+> model selection as an MLOps process (see [the section below](#model-selection-as-an-mlops-process-f2)).
+> `serve`, the registry promotion gate, and the drift loop land across F3–F5 — see
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a live production
+> deployment; the drift→retrain loop, once shipped, is a **demonstrated closed loop on
+> synthetic data**.
 
 ## Why the data is trustworthy (and reproducible)
 
@@ -88,14 +87,38 @@ not good intentions:
   boundary and inflate the score. A seeded `GroupShuffleSplit` keeps every unit on one
   side only; disjointness is asserted, not assumed.
 
-Determinism threads end to end — one seed → data → split → (F2) metrics. Rationale in
+Determinism threads end to end — one seed → data → split → metrics. Rationale in
 [ADR-003](docs/DECISIONS.md).
+
+## Model selection as an MLOps process (F2)
+
+`pdm train` doesn't fit *a* model — it runs an **honest comparison** and leaves a
+tracked trail of it ([`train.py`](src/pdm_mlops/train.py)):
+
+- **Two contenders, one interface.** A scikit-learn `LogisticRegression` pipeline
+  (median-impute → scale → logreg) and a `LightGBM` classifier, behind one
+  `fit`/`predict_proba` ([`models.py`](src/pdm_mlops/models.py)). Imputation lives **in
+  the LogReg pipeline**, so the era-NULL missingness stays intact upstream and only the
+  model that needs it fills it; LightGBM sees the `NaN` natively.
+- **Both tracked, the winner registered.** Each model is an **MLflow run** (params +
+  ROC-AUC + the fitted artifact); the best `roc_auc` is **registered** in the MLflow
+  Model Registry. "Which model is current, and on what evidence" is recorded, not
+  folklore — F3 builds gated promotion on this.
+- **Local, server-free, deterministic.** Tracking + registry run on a local **SQLite**
+  backend (no daemon, no paid service); same seed → same metrics. A `DegenerateSplit`
+  guard fails loudly rather than logging a meaningless `nan` if a tiny-fixture split
+  lands single-class. Rationale in [ADR-004](docs/DECISIONS.md).
+
+```bash
+pdm train                 # full dataset (needs the [generate] extra); SQLite-tracked
+pdm train --no-register   # compare + track without touching the registry
+```
 
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
 |---------|------|------|
-| Experiment tracking + model registry | **MLflow** | Local file backend — no server, no cost. |
+| Experiment tracking + model registry | **MLflow** | Local **SQLite** backend — no server, no cost. |
 | Model | **scikit-learn** + **LightGBM** | A LogReg baseline and a LightGBM contender, compared *through MLflow* — model selection as an MLOps process. |
 | Serving | **FastAPI** | Serves the promoted registry model. |
 | Drift monitoring | **Evidently** | Baseline vs. a `season`-shifted distribution. |
@@ -123,7 +146,7 @@ pip install -e .[generate]
 The `pdm` CLI surface (subcommands fill in by phase):
 
 ```bash
-pdm train             # F2 — train both models, track to MLflow, register the winner
+pdm train             # F2 — train both models, track to MLflow, register the winner (LIVE)
 pdm serve             # F4 — FastAPI serving the promoted model
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
 pdm monitor           # F5 — an Evidently drift report
@@ -135,7 +158,9 @@ pdm monitor           # F5 — an Evidently drift report
 |------|------|
 | **F0** | Foundations & runnable skeleton (package, CLI, CI, canonical config, smoke fixture) ✅ |
 | **F1** | Data adapter (full regeneration + offline fallback) + leakage-safe features ✅ |
-| **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ☐ |
+| **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ✅ |
+| **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ☐ |
+| **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ☐ |
 | **F3** | Model registry — gated stage→production promotion + rollback ☐ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |

@@ -1,16 +1,14 @@
 """``pdm`` command-line entry point.
 
-F0 ships the skeleton: ``--version`` (smoke-tested in CI, mirroring the
-generator's ``forge --version``) plus the subcommand surface stubbed out so the
-shape is visible and each later phase fills one in:
+The subcommand surface mirrors the roadmap; each phase fills one in:
 
-    pdm train     # F2 — train both models, log to MLflow, register the winner
+    pdm train     # F2 — train both models, log to MLflow, register the winner (LIVE)
     pdm serve     # F4 — FastAPI serving the promoted model
     pdm flow      # F5 — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5 — an Evidently drift report, baseline vs. a season shift
 
-Each stub exits non-zero with a pointer to the phase that implements it, so the
-command is honest about what is and isn't wired yet.
+Unimplemented stubs exit non-zero with a pointer to the phase that lands them, so
+the command stays honest about what is and isn't wired yet.
 """
 
 from __future__ import annotations
@@ -34,7 +32,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"forge-pdm-mlops {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("train", help="train both models, track to MLflow, register the winner (F2)")
+    train_p = sub.add_parser(
+        "train", help="train both models, track to MLflow, register the winner (F2)"
+    )
+    train_p.add_argument(
+        "--seed", type=int, default=None, help="seed threading data split → models"
+    )
+    train_p.add_argument(
+        "--no-register",
+        action="store_true",
+        help="track the runs but do not register the winner in the MLflow registry",
+    )
     sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
@@ -50,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.command == "train":
-        return _not_yet("F2")
+        from . import train as _train
+
+        summary = _train.train(seed=args.seed, register=not args.no_register)
+        print(_train.format_summary(summary))
+        return 0
     if args.command == "serve":
         return _not_yet("F4")
     if args.command == "flow":
