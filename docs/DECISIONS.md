@@ -280,9 +280,15 @@ torch-free. 22 new offline tests (49 total green).
 `signal_suspect` feature. F2.6 closes the modelling loop by making **"why this model,
 with these params"** *visible and defensible* — a tracked search, inspectable diagnostics,
 and guards that fail loud on a misleading fit. The hard honesty caveat is stated up front:
-on this synthetic data the score is **faint by design** (~0.547 AUC at F2), and neither
-cleaning nor HPO moves it much. So F2.6 is explicitly **not an accuracy play** — the
-portfolio value is the *process and the instrumentation*, not the number.
+**HPO is not an accuracy play** — the real lift came from the **data** (ADR-020's
+pre-failure degradation ramp + the `vibration_mms` feature lifted the score ≈0.55→0.82),
+not from tuning. This is now **measured, not asserted** (notebook run, seed 42, refreshed
+0.2.0 data, same cleaned frame): tuned − baseline held-out test ROC-AUC = **+0.0034
+(lightgbm: 0.8118→0.8152) / 0.0000 (logreg: 0.7131→0.7131)**. Grouped-CV search scores
+0.7526 (lightgbm) / 0.6767 (logreg). So F2.6's portfolio value is the *process and the
+instrumentation* — the visible, leakage-safe, ground-truth-scored search — not the number,
+and the near-zero delta is itself the honest, postable confirmation of that on realistic
+data.
 
 **Decision.**
 

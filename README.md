@@ -62,9 +62,19 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
 > rows, so there was **no signal to learn**. The root cause was upstream, in the
 > generator — failures had a *when* but the sensors had no *path toward* it. Fixed there
 > (`can-telemetry-forge` v0.2.0 added **progressive pre-failure degradation**), with the
-> leakage guards intact, the same model reaches **≈ 0.82 ROC-AUC**. Two attempts to also
-> rebalance the failure hazard were measured and **rejected** (neither beat the fix).
+> leakage guards intact, the same model reaches **≈ 0.82 ROC-AUC** (LightGBM test
+> **0.8152**). Two attempts to also rebalance the failure hazard were measured and
+> **rejected** (neither beat the fix).
 > *Finding that my own showcase was measuring at chance — and saying so — is the point.*
+>
+> 🔬 **And the hyper-parameter search? Measured — it doesn't move the number.** Running the
+> full grouped-CV Optuna study end-to-end (baseline vs tuned on the *same* cleaned frame,
+> only the hyper-parameters differ) lifts the held-out AUC by **+0.0034 (LightGBM
+> 0.8118→0.8152) / +0.0000 (LogReg 0.7131→0.7131)** — essentially nothing. The lift came
+> from the **data**, not the tuning. That near-zero delta is the honest, deliberate result:
+> HPO here is **instrumentation** (a tracked, leakage-safe, self-deception-proof search),
+> not an accuracy trick (ADR-006). Both models also pass the `--audit` watchers on the full
+> 134-unit data — the overfit trip is a 15-unit *fixture* artifact, not a model bug.
 
 ## Why the data is trustworthy (and reproducible)
 
@@ -176,6 +186,13 @@ On the **cleaned** F2.5 inputs, F2.6 makes "why this model, with these params"
   **majority-baseline** guard (must beat 0.5), opt-in via `--audit`. On the tiny smoke
   fixture the deep model genuinely overfits and the guard **trips** — kept and tested as
   *the guard working*, not silenced ([ADR-006](docs/DECISIONS.md)).
+
+**Measured, not asserted.** Run end-to-end on the full dataset, the search moves the
+held-out AUC by **+0.0034 (LightGBM) / +0.0000 (LogReg)** — so "not an accuracy play" is a
+*number*, not a hedge: the real ≈0.82 came from the data (ADR-020), not the tuning. Both
+models pass `--audit` on the full 134-unit data (the overfit trip is a fixture-size
+artifact). The honest deliverable here is the visible, leakage-safe process — and a
+near-zero delta reported plainly.
 
 ```bash
 pdm tune                          # grouped-CV Optuna HPO, tracked to MLflow
