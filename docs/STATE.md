@@ -211,12 +211,27 @@ runnable skeleton — closed at an earlier boundary.)
 
 ## Next step (concrete)
 
-**F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
+**F2.7 — Temporal modelling (PROPOSED 2026-06-27; ADR-007 written, build next session).**
+Decided with Jorge after the F2.6 HPO-null measurement: the score ceiling is a
+*representation* limit (the failure is a degradation **ramp** — generator ADR-020 — and a
+per-row model discards the trajectory), so the honest lever is temporal structure, **measured
+to earn its place**, not a bigger classifier. A **three-rung ladder**, same unit split / seed
+/ metric / test rows: (a) per-row LightGBM (the 0.8152 bar) → (b) **temporal-features
+LightGBM** (rolling/lag stats; "does time help at all?") → (c) a dilated **causal TCN**
+(PyTorch, GPU on the notebook's RTX 4050) that must beat (b). New `sequence.py` (windowing +
+TCN behind `fit`/`predict_proba`), reusing the F1 unit-grouped split exactly and the same
+MLflow experiment/registry; causal convs structurally forbid intra-window future leakage;
+era-NULL → impute + missingness-mask channel; determinism via `use_deterministic_algorithms`
+(tested path tiny/CPU, reported run GPU); reuses the `[deep]` extra. DoD + the full rationale
+in ROADMAP F2.7 + **ADR-007**. **It is orthogonal to the MLOps gate** — F3/F4/F5 stay the
+priority the repo exists to close; F2.7 is a no-schedule-pressure modelling detour.
+
+**Then F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
 already writes to. `registry.py`: register the winner, **stage→production promotion gated
 by the eval metric**, and rollback. DoD: a *worse* candidate does **not** promote
-(asserted); rollback restores the prior production version. ADR-007 (promotion gate).
-Build it on the SQLite-backed registry (ADR-004) and the tuned winner F2.6 can now
-produce. Tests stay offline (tmp SQLite, the fixture).
+(asserted); rollback restores the prior production version. ADR-008 (promotion gate).
+Build it on the SQLite-backed registry (ADR-004) and the (tabular or temporal) winner
+F2.6/F2.7 can produce. Tests stay offline (tmp SQLite, the fixture).
 
 **Honesty note (carries forward) — now measured, not asserted.** The real lift came from
 the **data**, not the modelling: ADR-020's pre-failure degradation ramp + the
@@ -229,7 +244,8 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — F2.6 closes at this boundary for review before F3 starts.
+One phase per session — F2.6 + its HPO measurement close at this boundary; **F2.7 is
+planned (ADR-007) and builds next session.**
 
 ## Notes
 
