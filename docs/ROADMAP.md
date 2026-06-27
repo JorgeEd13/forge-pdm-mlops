@@ -11,7 +11,10 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F2** | ✅ done | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
 | **F2.5** | ✅ done | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder ladder on signals, scored vs. ground truth (AE earns its place; temporal rewritten after a logged negative result) → a leakage-safe `signal_suspect` feature + a data-quality watcher |
 | **F2.6** | ✅ done | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
-| **F2.7** | ☐ proposed | **Temporal modelling — does the trajectory help?** A three-rung ladder (per-row LightGBM → temporal-features LightGBM → a dilated **causal** TCN), the deep rung must *earn its place*; representation, not tuning, is the lever (ADR-007) |
+| **F2.7** | ☑ done | **Temporal modelling — does the trajectory help?** A three-rung ladder (per-row LightGBM → temporal-features LightGBM → a dilated **causal** TCN). **Measured (full data, GPU, seed 42): per-row 0.8125 → temporal-features 0.8194 (+0.0069, temporal *does* help) → TCN 0.8148 (−0.0046, deep does NOT earn its place; HPO of the TCN, grouped-CV, lands 0.8107 — tuning doesn't rescue it).** The cheap, interpretable temporal-features LightGBM wins; reported either way (ADR-007) |
+| **F2.8** | ☐ planned (next) | **Characterize the ceiling — is the limit the data or the model?** Stop *asserting* "0.82 is the information limit" and *measure* it: per-horizon + per-failure-mode AUC decomposition, a (clearly-labelled, never-reported) label-leaking upper-bound, and a stacking redundancy probe over the F2.7 rungs. **The capstone that closes the F2.* modelling arc** (ADR-010) |
+| **F2.9** | ↗ future work *(deferred by design)* | **Task reframing — does the binary target hide the ramp?** Reframe to **RUL / graded severity** (the PdM task where the trajectory carries separable signal) and re-run the ladder + a stack. Identified and scoped, **intentionally not built**: it's a deep-learning/modelling axis better owned by a dedicated DL showcase than buried in this MLOps repo — the spine (F3+) is the priority (ADR-011) |
+| **F2.10** | ↗ future work *(deferred by design)* | **Cross-dataset validation — does the conclusion generalize?** Run the same ladder on **NASA C-MAPSS** (the canonical public RUL benchmark where temporal models win). Scoped, **intentionally not built** for the same reason as F2.9 — a generalization claim worth making in its own focused artifact, not as a sub-phase of the production showcase (ADR-012) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
@@ -150,12 +153,87 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
   - **ADR-007** — why representation-not-tuning, the ladder, the TCN choice, the
     parallel-contender integration (`sequence.py`, not forced into `build_all`), determinism
     (tested path tiny/CPU; reported run GPU — RTX 4050), the `[deep]` extra reuse.
-- **DoD.** A reported three-way comparison on the same test set (the deep rung measured to
-  earn — or not earn — its place over temporal-features); the windowing's unit-grouped split
-  + no-future-leak asserted by test; same-seed determinism; everything offline/deterministic
-  on the fixture (a tiny CPU TCN); logged to the same MLflow experiment, winner registrable.
+- **DoD — met.** A reported three-way comparison on the same test set (the deep rung measured
+  to **not** earn its place: TCN 0.8148 < temporal-features 0.8194; temporal *does* help,
+  +0.0069 over per-row); the windowing's unit-grouped split proven **row-identical to F1** +
+  no-future-leak asserted by test; same-seed determinism (offline CPU **and** the GPU run);
+  everything offline/deterministic on the fixture (a tiny CPU TCN); logged to the same MLflow
+  experiment, winner registrable. `sequence.py` + `pdm sequence` + 10 tests. **73 green.**
 - **Note.** A modelling phase, **orthogonal to the MLOps gate** (F3/F4/F5). Sits before F3 in
   execution but does not block it; no schedule pressure (Jorge's call, 2026-06-27).
+
+## The F2.8–F2.10 modelling arc — "is the model the bottleneck?", measured to exhaustion
+
+F2.6 and F2.7 turned one question into measured answers (tuning? no; representation? a little;
+deep? no; tuning the deep? no). The investigation is closed with **F2.8 as its capstone** — a
+*measurement* that 0.82 is an information ceiling, not a modelling one — and stops there **by
+design**.
+
+**F2.9 and F2.10 are scoped but deliberately deferred (2026-06-27 decision, career-wide view).**
+The reasoning: this repo's job is the **MLOps production spine** (train → registry → serve →
+drift → retrain → cloud), and the rare portfolio signal is *finishing that spine*, not polishing
+a modelling side-quest. F2.5/F2.6/F2.7 already proved the rigor/honesty attitude conclusively;
+two more sub-phases reinforce the same trait at diminishing return while an over-deep F2 branch
+next to an unfinished gate *inverts* the signal. RUL (F2.9) and C-MAPSS (F2.10) are a
+deep-learning/benchmarking axis better owned by a **dedicated DL showcase** (or by making the
+private `project_fleet_ml` browsable) than buried here. Leaving them as *curated future work* is
+itself the senior signal — knowing what the next steps are and choosing the spine. They are kept
+below in full so the judgment (and the scoping) is on the record.
+
+## F2.8 — Characterize the ceiling (is the limit the data or the model?)
+
+- **Objective.** Stop *asserting* "0.82 is the data's information limit" and **measure** it —
+  where predictability lives, and how much of the gap to a perfect score is irreducible.
+- **How.** (1) **Decompose the score** — held-out AUC by **time-to-failure horizon** bucket and
+  by **failure mode**: is 0.82 flat, or ~0.95 near failure and ~0.6 far out (most of the 168h
+  window genuinely healthy-and-unpredictable by construction)? (2) A deliberately **label-leaking
+  upper-bound** model (sees `failure_mode`/time-to-failure) — **a diagnostic, clearly labelled,
+  never reported as a result** — to bound the irreducible error. (3) A **stacking redundancy
+  probe**: an out-of-fold meta-learner over the F2.7 rungs; if it fails to beat its best member,
+  the rungs are information-redundant → the ceiling is the data, confirmed. Offline-testable on
+  the fixture; full numbers on GPU/full data.
+- **DoD.** A reported horizon/mode decomposition; a measured irreducible-error bound (with the
+  leaky model fenced off from any reported metric, asserted by test); the stacking probe's
+  verdict reported either way. **ADR-010.**
+
+## F2.9 — Task reframing: RUL / graded label (does the binary target hide the ramp?) — *future work, deferred by design*
+
+> **Status: scoped, intentionally not built.** Kept on record as the next rigorous modelling
+> step; deferred so the production spine (F3+) lands first and so this DL/modelling axis can live
+> in a focused showcase rather than this MLOps repo (2026-06-27).
+
+- **Objective.** The binary `failure_within_h` flattens a continuous degradation **ramp** into a
+  step. Reframe to **remaining-useful-life (RUL) regression** or a **graded severity** target —
+  the canonical PdM framing where the *trajectory* carries separable signal a per-row snapshot
+  can't. The one honest swing at actually moving the result: by matching the **task** to the
+  information, not the **model** to the test.
+- **How.** Derive a continuous RUL / graded target from the generator's failure event
+  (label-side, **leakage-safe** — features stay signals-only, the F1 guard holds on the new
+  target). Re-run the same ladder (per-row / temporal-features / TCN) **plus the OOF stack** from
+  F2.8, on the same unit split / seed. Metric matched to the task (RUL: MAE/RMSE + a banded-AUC
+  for comparability with F2.7; or an ordinal score). **Stacking can finally earn its place here**
+  if temporal/deep stop being redundant.
+- **DoD.** A reported comparison on the reframed task; whether temporal/deep/stack now earn their
+  place (reported **either way** — a null is still the result); the leakage guard re-asserted on
+  the new target. **ADR-011.**
+
+## F2.10 — Cross-dataset validation: NASA C-MAPSS (does the conclusion generalize?) — *future work, deferred by design*
+
+> **Status: scoped, intentionally not built.** A generalization claim worth making in its own
+> focused artifact, not as a sub-phase of the production showcase; deferred with F2.9 (2026-06-27).
+
+- **Objective.** Test whether "temporal helps a little, deep doesn't earn its place" is a
+  property of **this synthetic data's ceiling** or a general claim — by running the same ladder on
+  **NASA C-MAPSS** (the canonical public turbofan **RUL** benchmark, where temporal models *are*
+  known to win). If the rung ranking **flips** there, the pipeline was never the bottleneck — the
+  synthetic ceiling was. A deliberate, **eyes-open scope expansion** of the repo's narrative.
+- **How.** A thin, **license-checked public** C-MAPSS adapter into the same `features` / `sequence`
+  surfaces (kept clearly separate from the synthetic story — a `benchmarks/` path), then the same
+  three-rung ladder + stack. Compare the **ranking** of rungs on C-MAPSS vs. here, not absolute
+  numbers across datasets.
+- **DoD.** A reported ladder on C-MAPSS; an explicit statement of whether the deep rung wins there
+  (confirming the synthetic ceiling, not a pipeline limit); clean-room boundary intact (public
+  data only, never mixed into the synthetic narrative). **ADR-012.**
 
 ## F3 — Registry + promotion
 

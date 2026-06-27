@@ -5,6 +5,7 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm train     # F2  — train both models, log to MLflow, register the winner (LIVE)
     pdm detect    # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
     pdm tune      # F2.6 — grouped-CV Optuna HPO on the cleaned inputs (LIVE)
+    pdm sequence  # F2.7 — three-rung temporal ladder (per-row / temporal / TCN) (LIVE)
     pdm serve     # F4  — FastAPI serving the promoted model
     pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
@@ -88,6 +89,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="include the [deep] torch autoencoder rung (needs the '[deep]' extra)",
     )
 
+    seq_p = sub.add_parser(
+        "sequence",
+        help="three-rung temporal ladder: per-row / temporal-features / causal TCN (F2.7)",
+    )
+    seq_p.add_argument("--seed", type=int, default=None, help="seed threading split → rungs")
+    seq_p.add_argument(
+        "--window", type=int, default=None, help="lookback window in rows (default 24)"
+    )
+    seq_p.add_argument(
+        "--epochs", type=int, default=None, help="TCN training epochs (default 8)"
+    )
+    seq_p.add_argument(
+        "--channels", type=int, default=None, help="TCN conv channels (default 32)"
+    )
+    seq_p.add_argument(
+        "--device", default=None, help="torch device for the TCN (default: cuda if available)"
+    )
+    seq_p.add_argument(
+        "--register",
+        action="store_true",
+        help="register the winning rung (tabular or temporal) in the MLflow registry",
+    )
+
     sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
@@ -137,6 +161,28 @@ def main(argv: list[str] | None = None) -> int:
             readings, seed=args.seed, include_autoencoder=args.autoencoder
         )
         print(_ds.format_ladder_score(score))
+        return 0
+    if args.command == "sequence":
+        from . import data as _data
+        from . import sequence as _seq
+
+        readings = _data.load_readings()
+        window = args.window or _seq.DEFAULT_WINDOW
+        tcn_kwargs: dict[str, object] = {"window": window}
+        if args.epochs is not None:
+            tcn_kwargs["epochs"] = args.epochs
+        if args.channels is not None:
+            tcn_kwargs["channels"] = args.channels
+        if args.device is not None:
+            tcn_kwargs["device"] = args.device
+        cmp = _seq.compare(
+            readings,
+            seed=args.seed,
+            window=window,
+            tcn=_seq.TCNClassifier(**tcn_kwargs),
+            register=args.register,
+        )
+        print(_seq.format_comparison(cmp))
         return 0
     if args.command == "serve":
         return _not_yet("F4")
