@@ -11,6 +11,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F2** | ✅ done | Train + track — LogReg + LightGBM, both logged to MLflow, the winner registered (**MVP core**) |
 | **F2.5** | ✅ done | **Outlier robustness (clean first)** — unsupervised multivariate + temporal + autoencoder ladder on signals, scored vs. ground truth (AE earns its place; temporal rewritten after a logged negative result) → a leakage-safe `signal_suspect` feature + a data-quality watcher |
 | **F2.6** | ✅ done | Tune + diagnose — CV-grouped Optuna HPO on the cleaned inputs + logged model diagnostics + training watchers (instrumentation, not accuracy theatre) |
+| **F2.7** | ☐ proposed | **Temporal modelling — does the trajectory help?** A three-rung ladder (per-row LightGBM → temporal-features LightGBM → a dilated **causal** TCN), the deep rung must *earn its place*; representation, not tuning, is the lever (ADR-007) |
 | **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
@@ -128,11 +129,39 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
   earning its keep (a fixture-size artifact, like `DegenerateSplit`), tested as such. 14
   new offline tests (63 total green).
 
+## F2.7 — Temporal modelling (does the trajectory help?)
+
+- **Objective.** F2.6 *measured* that tuning is exhausted (+0.003). The ceiling is a
+  **representation** limit: the failure is a progressive degradation **ramp** (generator
+  ADR-020), and a per-row model discards the trajectory that is the signal. So give a model
+  the temporal structure and **measure whether it earns the complexity** — not chase the
+  number with a bigger classifier. Also fills a real gap: a *public* PyTorch deep showcase
+  (the only sequence work, `project_fleet_ml`, is private).
+- **How — a three-rung ladder, same unit split / seed / metric / test rows (apples-to-apples):**
+  - **(a) per-row LightGBM** — the F2.6 ceiling (0.8152), the bar.
+  - **(b) temporal-features LightGBM** — per-unit rolling/lag window stats (mean/slope/std)
+    → the *same* LightGBM. Isolates "does temporal structure help **at all**" (cheap, CPU),
+    and is the bar the deep rung must clear (so we never conflate "temporal helps" with
+    "deep helps").
+  - **(c) a dilated *causal* TCN** (PyTorch) over per-unit windows — must **earn its place**
+    over (b), reported either way (the F2.5 autoencoder pattern). Causal convolutions
+    *structurally* forbid intra-window future leakage; era-NULL enters as impute + a
+    **missingness-mask channel**; every test row scored (left-pad short histories).
+  - **ADR-007** — why representation-not-tuning, the ladder, the TCN choice, the
+    parallel-contender integration (`sequence.py`, not forced into `build_all`), determinism
+    (tested path tiny/CPU; reported run GPU — RTX 4050), the `[deep]` extra reuse.
+- **DoD.** A reported three-way comparison on the same test set (the deep rung measured to
+  earn — or not earn — its place over temporal-features); the windowing's unit-grouped split
+  + no-future-leak asserted by test; same-seed determinism; everything offline/deterministic
+  on the fixture (a tiny CPU TCN); logged to the same MLflow experiment, winner registrable.
+- **Note.** A modelling phase, **orthogonal to the MLOps gate** (F3/F4/F5). Sits before F3 in
+  execution but does not block it; no schedule pressure (Jorge's call, 2026-06-27).
+
 ## F3 — Registry + promotion
 
 - **Objective.** Governed model lifecycle.
 - **How.** `registry.py`: register the winner, **stage→production promotion gated by
-  the eval metric**, rollback. ADR-007 (promotion gate).
+  the eval metric**, rollback. ADR-008 (promotion gate).
 - **DoD.** A worse candidate does **not** promote (asserted); rollback restores the
   prior production version.
 
@@ -152,7 +181,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
   a drift decision). `flows.py` Prefect flow `detect_drift → [if drift] →
   retrain(compare) → evaluate → promote-or-hold`, tasks with retries.
   `.github/workflows/retrain.yml` runs it on a schedule on cloud runners.
-  ADR-008 (drift metric + retrain trigger policy). DEMO.md + a GIF.
+  ADR-009 (drift metric + retrain trigger policy). DEMO.md + a GIF.
 - **DoD.** Flow runs **in-process** in tests on the fixture; the drift branch fires
   and a model is promoted; the scheduled workflow is wired.
 

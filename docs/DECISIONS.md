@@ -340,3 +340,85 @@ the deliverable.*
 (seeded TPE + order-deterministic `GroupKFold` → same best params). The `[tune]` extra is
 optional and out of core CI (which trains untuned on the fixture); matplotlib is optional
 within it. F3 builds gated promotion on the registered winner — tuned or not.
+
+---
+
+## ADR-007 — Temporal modelling: a sequence contender (dilated **causal** TCN) added as a parallel, ground-truth-comparable rung, because the lever is representation, not tuning
+
+**Date:** 2026-06-27 · **Phase:** F2.7 · **Status:** proposed (plan-first; built next session)
+
+**Context.** F2.6 **measured** that HPO does not move the score (+0.003 LightGBM / +0.000
+LogReg on the full 0.2.0 data) — the per-row GBDT family is at its ceiling. That ceiling is
+a *representation* limit, not a model-capacity one: the failure signal is a **progressive
+pre-failure degradation ramp** over the horizon (the generator's ADR-020), and a model that
+sees **one row** discards the trajectory that *is* the signal. The honest next lever is
+therefore to give a model the temporal structure — not a bigger classifier or more trials.
+This also fills a real portfolio gap: a **public** PyTorch deep-learning showcase (the only
+existing sequence/encoder work, `project_fleet_ml`, is private/unbrowsable).
+
+**Decision.**
+
+1. **A three-rung honesty ladder, all on the same unit split / seed / metric / test rows**
+   (apples-to-apples, the F2.5 ladder discipline):
+   - **(a) per-row LightGBM** — the F2.6 ceiling (0.8152), the bar.
+   - **(b) temporal-features LightGBM** — per-unit rolling/lag window stats (mean / slope /
+     std over the recent window) fed to the *same* LightGBM. Isolates **"does temporal
+     structure help at all"** with a cheap, CPU-only model — and becomes the bar the deep
+     model must clear.
+   - **(c) a PyTorch sequence model** — must **earn its place** over (b), measured and
+     reported either way (exactly as the F2.5 autoencoder had to). Conflating "temporal
+     helps" with "deep helps" is the trap rung (b) exists to avoid.
+
+2. **Architecture = a 1-D dilated *causal* Temporal CNN (TCN)**, chosen for *this* problem,
+   not for buzz:
+   - **Multi-scale trend detection** via dilation is the cheapest way to capture a slope
+     across a long window, and the most likely to extract signal the hand-crafted rolling
+     features in (b) *cannot* (non-linear, cross-channel trajectory interactions) — which is
+     exactly what "earning its place" requires.
+   - **Causal padding structurally forbids future leakage**: the convolution at time *t*
+     can only see *t* and earlier. The architecture *enforces* the no-peeking property the
+     repo elsewhere guards by assertion — a stronger guarantee, not a weaker one.
+   - **Determinism**: cuDNN's deterministic conv path is solid; recurrent (cuDNN RNN) and
+     attention determinism on GPU is fiddlier. TCN is the best fit with our hard
+     same-seed→same-metric invariant. (It still reads as an "encoder": the pooled conv
+     stack is a learned temporal embedding → a small head.)
+
+3. **Integration = a parallel contender, not a hack into `build_all`.** A new
+   `sequence.py` builds per-unit, time-ordered windows by **reusing the exact F1 unit-grouped
+   split** (same `GroupShuffleSplit` seed → the *same* train/test units as the tabular
+   comparison) and wraps the TCN in the same `fit` / `predict_proba(→ per-row positive
+   proba)` surface, so `train.py` can log it to the **same MLflow experiment**, score it by
+   the same ROC-AUC **on the same test rows**, and let it compete for the registry. It is not
+   forced through the signals-only tabular `Dataset` (whose `X` deliberately drops
+   `unit_id`/time); windowing needs both, so it gets its own data path keyed off `readings`.
+
+4. **era-NULL into a net = impute + a missingness-mask channel.** A neural net can't ingest
+   NaN; rather than drop the era-NULL signal (ADR-003 keeps it as information), each signal
+   is imputed *and* paired with a binary "was-present" channel, so "which sensor era this
+   unit has" stays learnable — missingness-as-signal, carried into the sequence model.
+
+5. **Every test row is scored** (left-pad short histories, the mask covers the padding) so
+   the head-to-head metric is on the **identical** test set as the tabular rungs — no
+   subset-mismatch advantage.
+
+6. **Determinism & device.** `torch.use_deterministic_algorithms(True)` + seeded everything;
+   the **tested** path is a tiny CPU model on the fixture (offline, deterministic, CI-safe);
+   the **reported** number is the GPU run (RTX 4050, the notebook — `[[resources_compute]]`).
+   Reuses the existing `[deep]` torch extra (no new dependency); falls back to CPU when CUDA
+   is absent.
+
+**Why.** The whole repo's thesis is *honest evaluation over a flashy number*. The senior move
+after measuring that tuning is exhausted is not to abandon the number — it's to **identify the
+right lever (representation), pull it, and measure whether it earned the complexity**. A TCN
+that beats the temporal-features baseline is a legitimately higher number *and* a public deep
+showcase; a TCN that doesn't is still the honest "I tried the right lever and reported it"
+result. Either outcome is postable, and the causal-convolution leakage property is itself a CV
+point.
+
+**Consequences.** New `sequence.py` (windowing + TCN + the `fit`/`predict_proba` surface) and
+a `pdm train --sequence` (or an extended comparison) that logs the rung(s) to MLflow and lets
+the winner — tabular or temporal — register. Tests stay offline/deterministic (a tiny CPU TCN
+on the fixture; windowing leakage asserted; same-seed determinism). This is **F2.7**, a
+modelling phase that sits before F3 in execution; F3 (gated promotion) consequently becomes
+**ADR-008** and F5 (drift) **ADR-009**. F2.7 does not touch the MLOps gate work — F3/F4/F5
+remain the priority that the repo exists to close.
