@@ -345,7 +345,7 @@ within it. F3 builds gated promotion on the registered winner — tuned or not.
 
 ## ADR-007 — Temporal modelling: a sequence contender (dilated **causal** TCN) added as a parallel, ground-truth-comparable rung, because the lever is representation, not tuning
 
-**Date:** 2026-06-27 · **Phase:** F2.7 · **Status:** proposed (plan-first; built next session)
+**Date:** 2026-06-27 · **Phase:** F2.7 · **Status:** **accepted — built and measured** (2026-06-27)
 
 **Context.** F2.6 **measured** that HPO does not move the score (+0.003 LightGBM / +0.000
 LogReg on the full 0.2.0 data) — the per-row GBDT family is at its ceiling. That ceiling is
@@ -416,9 +416,51 @@ result. Either outcome is postable, and the causal-convolution leakage property 
 point.
 
 **Consequences.** New `sequence.py` (windowing + TCN + the `fit`/`predict_proba` surface) and
-a `pdm train --sequence` (or an extended comparison) that logs the rung(s) to MLflow and lets
+a `pdm sequence` subcommand that logs the three rungs to the same MLflow experiment and lets
 the winner — tabular or temporal — register. Tests stay offline/deterministic (a tiny CPU TCN
-on the fixture; windowing leakage asserted; same-seed determinism). This is **F2.7**, a
-modelling phase that sits before F3 in execution; F3 (gated promotion) consequently becomes
-**ADR-008** and F5 (drift) **ADR-009**. F2.7 does not touch the MLOps gate work — F3/F4/F5
-remain the priority that the repo exists to close.
+on the fixture; windowing leakage asserted; same-seed determinism; the shared split proven
+row-identical to F1's). This is **F2.7**, a modelling phase that sits before F3 in execution;
+F3 (gated promotion) consequently becomes **ADR-008** and F5 (drift) **ADR-009**. F2.7 does
+not touch the MLOps gate work — F3/F4/F5 remain the priority that the repo exists to close.
+
+**Outcome (measured — full data, GPU RTX 4050, seed 42, identical held-out rows).** The
+three-way comparison, deterministic across re-runs:
+
+| rung | ROC-AUC | vs. per-row | vs. temporal-features |
+|---|---|---|---|
+| (a) per-row LightGBM (the bar) | **0.8125** | — | — |
+| (b) temporal-features LightGBM | **0.8194** | **+0.0069** | — |
+| (c) dilated causal TCN (32 ch · 4 layers · window 24 · 12 epochs) | **0.8148** | +0.0023 | **−0.0046** |
+
+Two honest findings, *both* kept:
+
+1. **Temporal structure helps — a little.** Rung (b) clears the per-row bar by **+0.0069**.
+   The trajectory carries signal a single row discards, confirming the representation thesis:
+   it *was* the right lever (the ramp is a temporal pattern), even though the lift is modest
+   because the failure ramp is gentle and a per-row snapshot already sees most of it.
+2. **The deep model does NOT earn its place.** The TCN lands **−0.0046 below** the cheap,
+   interpretable temporal-features LightGBM (and only +0.0023 over per-row). The cheap rung
+   (b) exists precisely to forbid conflating "temporal helps" with "deep helps" — and it did
+   its job: it won. This is the F2.5 autoencoder discipline applied again; the verdict is
+   **reported plainly, not buried**.
+
+Crucially, the TCN geometry was fixed **a priori** (a sensible default) and **not** tuned
+against the reported test ROC-AUC — doing so would be exactly the test-set leakage the repo
+guards everywhere. The causal-convolution no-future-leakage property (structural, not asserted)
+and the row-identical shared split stand as the reusable CV points regardless of the number.
+
+**HPO follow-up — measured, the verdict holds (full data, GPU, seed 42).** "Could tuning the
+TCN beat the bar?" was settled empirically with the F2.6 `tune.py` discipline: a seeded Optuna
+study (12 trials) over the TCN's geometry (`window`/`channels`/`layers`/`kernel`/`epochs`/`lr`/
+`weight_decay`), scored by **unit-grouped 3-fold CV on the *training* split only** — the test
+rows were never seen during the search. Best grouped-CV config (window 24 · 32 ch · 4 layers ·
+kernel 2 · 4 epochs · lr 1.2e-3 · wd 2e-4) at CV-AUC **0.7887**; trained once on the full train
+split and evaluated once on the same held-out rows → **test ROC-AUC 0.8107**, which is
+**−0.0041 *below* the a-priori TCN (0.8148)** and **−0.0087 below the temporal-features bar
+(0.8194)**. So **tuning does not rescue the deep model** — it lands within noise of the data
+ceiling (≈0.82, the ramp / generator ADR-020), grouped-CV-best ≠ test-best, and the cheap
+interpretable rung (b) keeps the title. This doubly confirms the F2.6 finding (HPO near-inert
+on this data) and closes the question. (A 12-trial / capped-space / short-epoch search does not
+*prove* no TCN anywhere beats 0.8194 — but with the ~0.82 ceiling and F2.6's null, the
+engineering verdict is firm: representation was the right lever; *deep*, and *tuning the deep*,
+were not.)

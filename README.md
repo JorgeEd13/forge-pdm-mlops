@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F2.6%20%E2%80%94%20tune%20%2B%20diagnose-yellow" alt="Status: F2.6 — tune + diagnose">
+  <img src="https://img.shields.io/badge/status-F2.7%20%E2%80%94%20temporal%20modelling-yellow" alt="Status: F2.7 — temporal modelling">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
@@ -46,15 +46,15 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F2.6 (tune + diagnose).** F0 (skeleton), F1 (real data layer +
+> ⚠️ **Honest status — F2.7 (temporal modelling).** F0 (skeleton), F1 (real data layer +
 > leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
-> ladder → a leakage-safe `signal_suspect` feature)** and **F2.6 (grouped-CV Optuna HPO
-> + model diagnostics + training watchers)** are in place. `serve`, the registry
-> promotion gate, and the drift loop land across F3–F5 — see
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a live production
-> deployment; the drift→retrain loop, once shipped, is a **demonstrated closed loop on
-> synthetic data**.
+> ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
+> + model diagnostics + training watchers)** and **F2.7 (a temporal-modelling ladder — does
+> the trajectory help?)** are in place. `serve`, the registry promotion gate, and the drift
+> loop land across F3–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a
+> live production deployment; the drift→retrain loop, once shipped, is a **demonstrated closed
+> loop on synthetic data**.
 >
 > 🔎 **The score is real (≈ 0.82), and that took fixing the *data*, not the model.**
 > Early on the classifier scored ≈ 0.55 — chance. Rather than tune the model, I measured
@@ -199,6 +199,44 @@ pdm tune                          # grouped-CV Optuna HPO, tracked to MLflow
 pdm train --tune --audit --diagnose   # tune, then train on tuned params with guards + artifacts
 ```
 
+## Why F2 keeps sub-phasing — one question, measured to exhaustion
+
+The string of `F2.x` phases isn't scope creep — it's **one question pursued honestly**: *how
+good can this model legitimately get, and what is actually limiting it?* Each sub-phase is the
+next logical probe, and **every answer (including the negative ones) is the deliverable**:
+
+| Sub-phase | Probe | Measured answer |
+|---|---|---|
+| **F2.5** | Are dirty inputs the limit? *(clean first)* | A scored detection ladder → a leakage-safe `signal_suspect` feature. |
+| **F2.6** | Is it the **hyper-parameters**? | **No** — HPO moves held-out AUC **+0.003 / +0.000**. The lift was the *data*, not tuning. |
+| **F2.7** | Is it the **representation** (per-row throws away the trajectory)? | **A little, and not the deep model.** per-row **0.8125** → temporal-features LightGBM **0.8194** (+0.007, temporal *does* help) → causal **TCN 0.8148** (−0.005, doesn't earn its place). Tuning the TCN (grouped-CV HPO) → **0.8107**, still below. The cheap, interpretable model wins. |
+
+The through-line: **the score is an *information* ceiling (~0.82), set by the data, not a
+modelling ceiling.** A senior result isn't a bigger number squeezed out by force — it's
+*knowing where the number comes from and saying so*. (If a 12-trial HPO had reliably beaten the
+baseline on ceiling-limited synthetic data, **that** would be the red flag.)
+
+The F2.* arc closes with **one capstone**, then deliberately stops (see
+[`docs/ROADMAP.md`](docs/ROADMAP.md)) — the engineering attitude is to *characterize the wall*,
+**never** to torture the number upward, and to **know when to stop**:
+
+- **F2.8 — characterize the ceiling** *(next)*. *Measure* (don't assert) that 0.82 is the data's
+  limit: per-horizon / per-failure-mode decomposition, a fenced-off label-leaking upper bound, and
+  a stacking redundancy probe. This turns the F2.5→2.7 string of measured nulls into a *proven
+  thesis* — the ceiling is the **data**, not the model.
+- **F2.9 (RUL / graded label) & F2.10 (NASA C-MAPSS) — scoped, deferred by design.** The next
+  rigorous steps *are* identified — reframe the binary target to remaining-useful-life (where the
+  trajectory becomes separable), and cross-validate on the canonical public benchmark where
+  temporal models win. But the rigor is already proven, and this repo's job is the **production
+  spine** (F3+), not a deeper modelling branch. They live as **curated future work** — a
+  deep-learning axis better owned by a dedicated showcase. *Choosing the spine over more
+  sub-phases is the call on record.*
+
+```bash
+pdm sequence                      # F2.7 — the three-rung temporal ladder, same split / test rows
+pdm sequence --epochs 12 --register   # full TCN run on the GPU; register the winning rung
+```
+
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
@@ -234,6 +272,7 @@ The `pdm` CLI surface (subcommands fill in by phase):
 pdm train             # F2   — train both models, track to MLflow, register the winner (LIVE)
 pdm detect            # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
 pdm tune              # F2.6 — grouped-CV Optuna HPO on the cleaned inputs, tracked (LIVE)
+pdm sequence          # F2.7 — three-rung temporal ladder (per-row / temporal / causal TCN) (LIVE)
 pdm serve             # F4   — FastAPI serving the promoted model
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
 pdm monitor           # F5   — an Evidently drift report
@@ -248,6 +287,10 @@ pdm monitor           # F5   — an Evidently drift report
 | **F2** | Train + track — two models to MLflow, the winner registered (**MVP core**) ✅ |
 | **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ✅ |
 | **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ✅ |
+| **F2.7** | **Temporal modelling** — a three-rung ladder (per-row → temporal-features → causal **TCN**); temporal helps a little, the deep model doesn't earn its place (measured, reported either way) ✅ |
+| **F2.8** | *(next)* Characterize the ceiling — horizon/mode AUC decomposition + leaky upper-bound + stacking redundancy probe; the capstone that closes the F2.* arc ☐ |
+| **F2.9** | ↗ *future work (deferred by design)* — task reframing to RUL / graded label |
+| **F2.10** | ↗ *future work (deferred by design)* — cross-dataset validation on **NASA C-MAPSS** |
 | **F3** | Model registry — gated stage→production promotion + rollback ☐ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |

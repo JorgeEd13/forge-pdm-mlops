@@ -4,6 +4,38 @@ Updated: 2026-06-27
 
 ## Current focus
 
+**F2.7 (Temporal modelling — does the trajectory help?) — DONE.** The honest follow-on to
+the F2.6 HPO-null finding: if tuning is exhausted because the ceiling is a *representation*
+limit (the failure is a degradation **ramp** — generator ADR-020 — and a per-row model
+discards the trajectory), then the lever is temporal structure, **measured to earn its
+place**. A **three-rung ladder** in new `sequence.py`, all on the **same unit split / seed /
+metric / test rows** as F1 (proven row-identical by test). **Measured on the full data (GPU
+RTX 4050, seed 42, deterministic across re-runs):**
+
+| rung | ROC-AUC | Δ |
+|---|---|---|
+| (a) per-row LightGBM (the bar) | 0.8125 | — |
+| (b) temporal-features LightGBM | **0.8194** | **+0.0069** vs. (a) |
+| (c) dilated causal TCN | 0.8148 | **−0.0046** vs. (b) |
+
+Two findings, both kept: **(1) temporal structure helps** (+0.0069 over per-row — the
+trajectory carries signal, confirming the representation thesis), but the lift is modest
+because the ramp is gentle; **(2) the deep model does NOT earn its place** — the TCN lands
+below the cheap, interpretable temporal-features LightGBM, so rung (b) wins. The cheap rung
+exists precisely to stop us conflating "temporal helps" with "deep helps", and it did its job
+(the F2.5 autoencoder discipline again). The TCN geometry was fixed **a priori** and never
+tuned against the reported test rows (that would be the very leakage the repo guards).
+**HPO follow-up (measured, settles "could tuning the TCN win?"):** a seeded Optuna study (12
+trials) over the TCN geometry, scored by **unit-grouped 3-fold CV on the *training* split
+only** (test rows never seen), then evaluated once on the same held-out rows → tuned TCN
+**0.8107**, *below* the a-priori TCN (−0.0041) and the temporal bar (−0.0087). **Tuning does
+not rescue the deep model** — it sits within noise of the ≈0.82 data ceiling; the cheap rung
+(b) keeps the title (doubly confirms the F2.6 HPO-null). The
+causal-convolution no-future-leakage is **structural**; era-NULL enters as impute + a
+missingness-mask channel; every test row scored (short histories left-padded). `pdm sequence`
+runs it live; logged to the same MLflow experiment, winner registrable. New `sequence.py` +
+10 tests. **73 tests green offline.** ADR-007.
+
 **Data realism refresh — generator `can-telemetry-forge` 0.1.0 → 0.2.0 (cross-repo).**
 Consuming the generator exposed that its failures had **no temporal signature** (a
 failing unit's pre-failure rows were identical to its healthy rows), so a per-row model
@@ -209,24 +241,60 @@ runnable skeleton — closed at an earlier boundary.)
   majority watcher fires + strict raises), + 2 in `test_train.py` (tuned params thread
   through on the cleaned frame; `--audit` raises). **63 total green.**
 
+### F2.7 — Temporal modelling (2026-06-27)
+
+- **`sequence.py`** — the three-rung ladder behind one comparison. `split_indices` mirrors
+  `features.prepare`'s `GroupShuffleSplit` **bit-for-bit** (proven row-identical by test), so
+  all rungs score on the *same* held-out rows. `temporal_features` builds per-unit **causal**
+  rolling mean/std/slope/delta (groupby-rolling resets at each unit boundary → no future
+  leak, no cross-unit bleed; re-passes `assert_no_leakage`). `build_windows` standardises on
+  **train rows only**, imputes era-NULL to the train mean **and** emits a was-present mask
+  channel, and pre-computes left-padded causal window indices (memory-bounded gather, not a
+  materialised N×W×C tensor). `TCNClassifier` = a dilated **causal** 1-D conv stack
+  (left-pad + right-chomp ⇒ the no-peek property is *structural*) → last-timestep head →
+  per-row proba; `fit(readings, train_idx, y)` / `predict_proba(readings, idx)`. `compare`
+  runs (a) per-row LightGBM, (b) temporal-features LightGBM, (c) the TCN, logs each to the
+  **same** MLflow experiment, returns the three-way result + the earns-its-place verdict +
+  registrable winner.
+- **`cli.py`** — `pdm sequence` (`--window`, `--epochs`, `--channels`, `--device`,
+  `--register`) live; the real path regenerates the full dataset, the TCN auto-selects CUDA.
+- **Measured (full data, GPU RTX 4050, seed 42, deterministic across two re-runs):** per-row
+  **0.8125** → temporal-features **0.8194** (**+0.0069**, temporal *does* help) → TCN
+  **0.8148** (**−0.0046** vs. (b), deep does **not** earn its place). Cheap interpretable
+  rung wins; verdict reported either way. TCN geometry fixed a-priori, **never** tuned vs. the
+  test rows (leakage guard). **ADR-007** carries the table + the two honest findings.
+- **`[deep]` torch extra reused** (no new dependency), out of core CI.
+- **Tests** — `test_sequence.py` (10: split row-identical to F1, unit-disjoint, temporal
+  features leakage-safe + **no future peek**, windows causal/unit-bounded, left-pad zeroed,
+  TCN deterministic + scores every test row, three-rung compare on the same rows + registers,
+  compare determinism). Torch-free rungs always run; TCN rungs skip without `[deep]`.
+  **73 total green offline.**
+
 ## Next step (concrete)
 
-**F2.7 — Temporal modelling (PROPOSED 2026-06-27; ADR-007 written, build next session).**
-Decided with Jorge after the F2.6 HPO-null measurement: the score ceiling is a
-*representation* limit (the failure is a degradation **ramp** — generator ADR-020 — and a
-per-row model discards the trajectory), so the honest lever is temporal structure, **measured
-to earn its place**, not a bigger classifier. A **three-rung ladder**, same unit split / seed
-/ metric / test rows: (a) per-row LightGBM (the 0.8152 bar) → (b) **temporal-features
-LightGBM** (rolling/lag stats; "does time help at all?") → (c) a dilated **causal TCN**
-(PyTorch, GPU on the notebook's RTX 4050) that must beat (b). New `sequence.py` (windowing +
-TCN behind `fit`/`predict_proba`), reusing the F1 unit-grouped split exactly and the same
-MLflow experiment/registry; causal convs structurally forbid intra-window future leakage;
-era-NULL → impute + missingness-mask channel; determinism via `use_deterministic_algorithms`
-(tested path tiny/CPU, reported run GPU); reuses the `[deep]` extra. DoD + the full rationale
-in ROADMAP F2.7 + **ADR-007**. **It is orthogonal to the MLOps gate** — F3/F4/F5 stay the
-priority the repo exists to close; F2.7 is a no-schedule-pressure modelling detour.
+**F2.8 — Characterize the ceiling (NEXT, ADR-010). The capstone that closes the F2.* arc.**
+Measure, don't assert, that 0.82 is the data's information limit: per-horizon + per-failure-mode
+AUC decomposition; a label-leaking upper-bound (a **diagnostic**, fenced off from any reported
+metric, asserted by test); a **stacking redundancy probe** (OOF meta-learner over the F2.7 rungs
+— if it can't beat its best member, the rungs are redundant → ceiling confirmed). *Stacking lives
+here as a probe, not a product — a within-noise bump on the binary task would only muddy the clean
+F2.7 finding.* This turns the F2.5→2.7 string of nulls into a *proven thesis* and **the modelling
+investigation stops here, by design.**
 
-**Then F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
+**Then jump to the MLOps spine — F3 → F4 → F5 → F6 (the repo's actual job).** A complete
+production spine (train → registry → serve → drift → retrain → cloud) is the rare portfolio
+signal; finishing it beats polishing the modelling branch.
+
+**F2.9 (RUL / graded label, ADR-011) and F2.10 (C-MAPSS, ADR-012) — FUTURE WORK, DEFERRED BY
+DESIGN (2026-06-27, career-wide decision).** Both are scoped in full in `ROADMAP.md` but
+intentionally **not built**: the rigor/honesty attitude is already proven (F2.5/2.6/2.7), an
+over-deep F2 branch next to an unfinished gate *inverts* the signal, and RUL/C-MAPSS are a
+deep-learning/benchmarking axis better owned by a dedicated DL showcase (or by making the private
+[[project_fleet_ml]] browsable). Leaving them as **curated future work is itself the senior
+signal** — knowing the next step and choosing the spine. Build only if a dedicated DL showcase is
+decided.
+
+**F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
 already writes to. `registry.py`: register the winner, **stage→production promotion gated
 by the eval metric**, and rollback. DoD: a *worse* candidate does **not** promote
 (asserted); rollback restores the prior production version. ADR-008 (promotion gate).
@@ -244,8 +312,9 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — F2.6 + its HPO measurement close at this boundary; **F2.7 is
-planned (ADR-007) and builds next session.**
+One phase per session — **F2.7 (temporal modelling) is built and measured at this boundary**
+(incl. the TCN HPO follow-up); **F2.8 (characterize the ceiling, ADR-010) builds next**, then
+F2.9 / F2.10, then the F3 MLOps gate.
 
 ## Notes
 
