@@ -1,7 +1,10 @@
 """Hyper-parameter search — a tracked, unit-grouped Optuna study (F2.6).
 
-This is **instrumentation, not an accuracy play** (ADR-006): on this synthetic data the
-score is faint by design, so the value is a *visible, honest search* — every trial
+This is **instrumentation, not an accuracy play** (ADR-006) — now *measured*, not asserted:
+on the refreshed 0.2.0 data HPO moves the held-out test AUC by **+0.003 (lightgbm) / 0.000
+(logreg)**, i.e. essentially not at all (the real ≈0.82 came from the data — ADR-020's
+degradation ramp + `vibration_mms` — not the tuning). So the value is a *visible, honest
+search* — every trial
 scored by **unit-grouped cross-validation** so the tuner can't leak a unit across folds
 and undo ADR-003, the whole study tracked to MLflow, and tuned params fed forward to
 :func:`train.train`.

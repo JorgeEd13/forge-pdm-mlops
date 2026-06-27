@@ -1,6 +1,6 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-06-26
+Updated: 2026-06-27
 
 ## Current focus
 
@@ -22,8 +22,10 @@ honestly-learnable data.) Re-run `pdm train` to refresh the registered metrics.
 
 **F2.6 (Tune + diagnose — instrumentation) — DONE.** On the F2.5-**cleaned** inputs
 (`features.prepare(suspect_feature=True)`), "why this model, with these params" is now
-**visible, tracked, and guarded** — deliberately *not* an accuracy play (the synthetic
-score stays ~0.55 AUC; ADR-006). Three pieces:
+**visible, tracked, and guarded** — deliberately *not* an accuracy play, now **measured**:
+on the refreshed 0.2.0 data HPO moves the held-out test AUC by **+0.003 (lightgbm) / 0.000
+(logreg)** — the real ≈0.82 came from the data (ADR-020), not the tuning (ADR-006). Three
+pieces:
 
 - **HPO (`tune.py`)** — one seeded **Optuna** study per contender over a *restricted,
   declared* tunable space (`models.LOGREG_TUNABLE`/`LIGHTGBM_TUNABLE`), scored by
@@ -216,9 +218,16 @@ by the eval metric**, and rollback. DoD: a *worse* candidate does **not** promot
 Build it on the SQLite-backed registry (ADR-004) and the tuned winner F2.6 can now
 produce. Tests stay offline (tmp SQLite, the fixture).
 
-**Honesty note (carries forward):** neither F2.5 cleaning nor F2.6 HPO moved the ~0.55
-AUC much on this synthetic data — by design. The value across F2–F2.6 is the *visible,
-ground-truth-scored process + the guards*, not accuracy.
+**Honesty note (carries forward) — now measured, not asserted.** The real lift came from
+the **data**, not the modelling: ADR-020's pre-failure degradation ramp + the
+`vibration_mms` feature took the score ≈0.55→0.82. **F2.6 HPO, measured on the refreshed
+0.2.0 data (notebook, seed 42, same cleaned frame), does *not* move it:** tuned − baseline
+held-out test ROC-AUC = **+0.0034 (lightgbm 0.8118→0.8152) / 0.0000 (logreg
+0.7131→0.7131)**; grouped-CV search 0.7526 / 0.6767; both pass `--audit` (lightgbm overfit
+gap train−CV = 0.880−0.753 = 0.127 < 0.15; logreg train≈CV≈test). The value across F2–F2.6
+is the *visible, ground-truth-scored process + the guards*, not accuracy — and the near-zero
+HPO delta is itself the honest, postable confirmation of that on realistically learnable
+data.
 
 One phase per session — F2.6 closes at this boundary for review before F3 starts.
 
