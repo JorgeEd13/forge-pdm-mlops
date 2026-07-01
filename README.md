@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F2.7%20%E2%80%94%20temporal%20modelling-yellow" alt="Status: F2.7 — temporal modelling">
+  <img src="https://img.shields.io/badge/status-F2.8%20%E2%80%94%20modelling%20arc%20closed-yellow" alt="Status: F2.8 — modelling arc closed">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
@@ -46,15 +46,16 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F2.7 (temporal modelling).** F0 (skeleton), F1 (real data layer +
+> ⚠️ **Honest status — F2.8 (the modelling arc is closed).** F0 (skeleton), F1 (real data layer +
 > leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
-> + model diagnostics + training watchers)** and **F2.7 (a temporal-modelling ladder — does
-> the trajectory help?)** are in place. `serve`, the registry promotion gate, and the drift
-> loop land across F3–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md). Nothing here implies a
-> live production deployment; the drift→retrain loop, once shipped, is a **demonstrated closed
-> loop on synthetic data**.
+> + model diagnostics + training watchers)**, **F2.7 (a temporal-modelling ladder — does
+> the trajectory help?)** and **F2.8 (characterize the ceiling — is the limit the model or the
+> data?)** are in place, closing the F2.\* modelling arc by design. `serve`, the registry
+> promotion gate, and the drift loop land across F3–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> Nothing here implies a live production deployment; the drift→retrain loop, once shipped, is a
+> **demonstrated closed loop on synthetic data**.
 >
 > 🔎 **The score is real (≈ 0.82), and that took fixing the *data*, not the model.**
 > Early on the classifier scored ≈ 0.55 — chance. Rather than tune the model, I measured
@@ -210,6 +211,7 @@ next logical probe, and **every answer (including the negative ones) is the deli
 | **F2.5** | Are dirty inputs the limit? *(clean first)* | A scored detection ladder → a leakage-safe `signal_suspect` feature. |
 | **F2.6** | Is it the **hyper-parameters**? | **No** — HPO moves held-out AUC **+0.003 / +0.000**. The lift was the *data*, not tuning. |
 | **F2.7** | Is it the **representation** (per-row throws away the trajectory)? | **A little, and not the deep model.** per-row **0.8125** → temporal-features LightGBM **0.8194** (+0.007, temporal *does* help) → causal **TCN 0.8148** (−0.005, doesn't earn its place). Tuning the TCN (grouped-CV HPO) → **0.8107**, still below. The cheap, interpretable model wins. |
+| **F2.8** | Is the ceiling the **model or the data**? *(the capstone — prove it)* | **The data.** Three converging probes: AUC **decomposed** by horizon/failure-mode (predictability lives near the event; the rest is healthy-and-unpredictable by construction), a fenced **label-leaking upper bound** (the oracle barely clears the honest model → little is recoverable), and an **OOF stacking redundancy probe** (a meta-learner can't beat its best base model → the models are information-redundant). Not asserted — measured. |
 
 The through-line: **the score is an *information* ceiling (~0.82), set by the data, not a
 modelling ceiling.** A senior result isn't a bigger number squeezed out by force — it's
@@ -220,10 +222,13 @@ The F2.* arc closes with **one capstone**, then deliberately stops (see
 [`docs/ROADMAP.md`](docs/ROADMAP.md)) — the engineering attitude is to *characterize the wall*,
 **never** to torture the number upward, and to **know when to stop**:
 
-- **F2.8 — characterize the ceiling** *(next)*. *Measure* (don't assert) that 0.82 is the data's
-  limit: per-horizon / per-failure-mode decomposition, a fenced-off label-leaking upper bound, and
-  a stacking redundancy probe. This turns the F2.5→2.7 string of measured nulls into a *proven
-  thesis* — the ceiling is the **data**, not the model.
+- **F2.8 — characterize the ceiling** *(done — the capstone)*. *Measured* (not asserted) that 0.82 is
+  the data's limit: a per-horizon / per-failure-mode decomposition, a fenced-off label-leaking upper
+  bound (a diagnostic, never a reported metric — asserted by test), and an out-of-fold stacking
+  redundancy probe. All three converge — the ceiling is the **data**, not the model. This turns the
+  F2.5→2.7 string of measured nulls into a *proven thesis*, and **the modelling investigation stops
+  here, by design.** *(The reported full-data numbers come from a GPU `pdm ceiling` run; the tiny
+  offline fixture is smoke only.)*
 - **F2.9 (RUL / graded label) & F2.10 (NASA C-MAPSS) — scoped, deferred by design.** The next
   rigorous steps *are* identified — reframe the binary target to remaining-useful-life (where the
   trajectory becomes separable), and cross-validate on the canonical public benchmark where
@@ -235,6 +240,7 @@ The F2.* arc closes with **one capstone**, then deliberately stops (see
 ```bash
 pdm sequence                      # F2.7 — the three-rung temporal ladder, same split / test rows
 pdm sequence --epochs 12 --register   # full TCN run on the GPU; register the winning rung
+pdm ceiling                       # F2.8 — decomposition + fenced upper-bound + stacking redundancy probe
 ```
 
 ## The stack (and why two orchestration layers)

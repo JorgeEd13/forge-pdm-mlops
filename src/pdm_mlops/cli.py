@@ -6,6 +6,7 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm detect    # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
     pdm tune      # F2.6 — grouped-CV Optuna HPO on the cleaned inputs (LIVE)
     pdm sequence  # F2.7 — three-rung temporal ladder (per-row / temporal / TCN) (LIVE)
+    pdm ceiling   # F2.8 — characterize the ceiling: decomposition + bound + stack probe (LIVE)
     pdm serve     # F4  — FastAPI serving the promoted model
     pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
@@ -112,6 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="register the winning rung (tabular or temporal) in the MLflow registry",
     )
 
+    ceil_p = sub.add_parser(
+        "ceiling",
+        help="characterize the ceiling: horizon/mode decomposition + upper-bound + stack probe (F2.8)",
+    )
+    ceil_p.add_argument("--seed", type=int, default=None, help="seed threading split → instruments")
+    ceil_p.add_argument(
+        "--window", type=int, default=None, help="temporal-features lookback in rows (default 24)"
+    )
+
     sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
@@ -183,6 +193,17 @@ def main(argv: list[str] | None = None) -> int:
             register=args.register,
         )
         print(_seq.format_comparison(cmp))
+        return 0
+    if args.command == "ceiling":
+        from . import ceiling as _ceiling
+        from . import data as _data
+        from . import sequence as _seq
+
+        readings = _data.load_readings()
+        report = _ceiling.characterize(
+            readings, seed=args.seed, window=args.window or _seq.DEFAULT_WINDOW
+        )
+        print(_ceiling.format_report(report))
         return 0
     if args.command == "serve":
         return _not_yet("F4")
