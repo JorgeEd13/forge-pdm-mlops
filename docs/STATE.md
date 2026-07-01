@@ -29,17 +29,17 @@ answers **with no redeploy**:
 - **`Dockerfile` + `docker-compose.yml`** (serving + the MLflow UI on one shared registry
   volume). `config.default_tracking_uri()` honours `MLFLOW_TRACKING_URI`, so the container
   serves the training host's registry with nothing baked in. `pdm serve --host/--port`.
-- **`test_serve.py` (11, offline, tmp SQLite):** the DoD **prediction round-trip** on a
+- **`test_serve.py` (10, offline, tmp SQLite):** the DoD **prediction round-trip** on a
   promoted fixture-trained model, health/model-info, the era-NULL passthrough + column
   reorder, the 503-without-a-model paths, and a rollback picked up by a fresh store load.
-  **111 tests total** (100 + 11). **ADR-009.**
+  **110 tests total** (100 + 10). **ADR-009.**
 
   > **Verification note (2026-07-01):** on the low-end i3 desktop the last full run reached
   > **79 tests with zero failures** before the machine wedged on a heavy-training test — the
   > known CPU-TCN / repeated-training stall ([[resources_compute]]), *not* a code defect. The
   > F4 no-global-state load fix was independently confirmed end-to-end by a **two-iteration
   > train→serve→train repro** ("PASS both isolated" — a lightgbm *and* a logreg winner each
-  > served correctly, no cross-registration leak). **The clean full 111-green `pytest` run is
+  > served correctly, no cross-registration leak). **The clean full 110-green `pytest` run is
   > pending on the notebook (GPU/faster CPU);** re-run there to record it.
 
 **F3 (Registry + gated promotion + rollback) — DONE (2026-07-01). The first build on the
@@ -430,7 +430,7 @@ runnable skeleton — closed at an earlier boundary.)
 - **Tests** — `test_serve.py` (11: predict round-trip on a promoted fixture-trained model
   (the DoD), era-NULL passthrough, column reorder, health-loaded/-empty, model-info,
   predict/model-info 503 without a model, rollback picked up by a fresh store load, empty
-  batch 422). Offline, tmp SQLite. **111 total green offline** (100 + 11). **ADR-009.**
+  batch 422). Offline, tmp SQLite. **110 total green offline** (100 + 10). **ADR-009.**
 
 ## Next step (concrete)
 

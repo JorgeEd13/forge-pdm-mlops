@@ -597,7 +597,7 @@ global-state-free load, `PredictRequest`/`Response`, `ModelInfo`) + `pdm serve -
 (uvicorn). `Dockerfile` (slim, `[serve]` extra, libgomp for LightGBM) + `docker-compose.yml`
 (serving + the MLflow UI on one shared registry volume — you can *see* the version the alias
 points at). `config.default_tracking_uri` (env-overridable) threads into `registry._client`.
-The `[serve]` extra (fastapi/uvicorn/httpx) was already declared at F0. `test_serve.py` (11,
+The `[serve]` extra (fastapi/uvicorn/httpx) was already declared at F0. `test_serve.py` (10,
 offline, tmp SQLite): the DoD **prediction round-trip** on a promoted fixture-trained model,
 the health/model-info surface, the era-NULL passthrough + column reorder, the 503-without-a-model
 paths, and a rollback picked up by a fresh store load — the multi-test run is what surfaced the
