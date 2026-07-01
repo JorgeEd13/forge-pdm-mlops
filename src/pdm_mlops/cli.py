@@ -9,7 +9,7 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm ceiling   # F2.8 — characterize the ceiling: decomposition + bound + stack probe (LIVE)
     pdm promote   # F3  — metric-gated promotion of a registered version to production (LIVE)
     pdm rollback  # F3  — restore the previous production version (LIVE)
-    pdm serve     # F4  — FastAPI serving the promoted model
+    pdm serve     # F4  — FastAPI serving the promoted model (LIVE)
     pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
 
@@ -146,7 +146,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("rollback", help="restore the previous production version (F3)")
 
-    sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
+    serve_p = sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
+    serve_p.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
+    serve_p.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
     sub.add_parser("monitor", help="emit an Evidently drift report (F5)")
@@ -257,7 +259,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Rolled back '{name}': production is now v{restored}.")
         return 0
     if args.command == "serve":
-        return _not_yet("F4")
+        import uvicorn
+
+        from . import serve as _serve
+
+        app = _serve.create_app()
+        print(
+            f"Serving the production-aliased model on http://{args.host}:{args.port} "
+            "(GET /health, /model-info · POST /predict)",
+            file=sys.stderr,
+        )
+        uvicorn.run(app, host=args.host, port=args.port)
+        return 0
     if args.command == "flow":
         return _not_yet("F5")
     if args.command == "monitor":

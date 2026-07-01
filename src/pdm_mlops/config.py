@@ -8,6 +8,7 @@ they become a frozen config object if/when the surface grows (mirrors the
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # --- Repository layout ------------------------------------------------------
@@ -52,6 +53,21 @@ REGISTERED_MODEL_NAME: str = "forge-pdm-failure-classifier"
 def sqlite_tracking_uri(db_path: Path) -> str:
     """A SQLite MLflow tracking URI for ``db_path`` (server-free local backend)."""
     return f"sqlite:///{db_path.as_posix()}"
+
+
+def default_tracking_uri() -> str:
+    """The MLflow tracking/registry URI the pipeline uses when none is injected.
+
+    Honours the standard ``MLFLOW_TRACKING_URI`` env var if set — so the serving
+    container (F4) can point at a mounted registry volume without a code change — and
+    otherwise falls back to the local ``mlruns/mlflow.db`` SQLite backend, creating its
+    directory. Tests always inject a tmp URI and never touch this.
+    """
+    override = os.environ.get("MLFLOW_TRACKING_URI")
+    if override:
+        return override
+    MLRUNS_DIR.mkdir(parents=True, exist_ok=True)
+    return sqlite_tracking_uri(MLFLOW_DB)
 
 # --- Modelling --------------------------------------------------------------
 

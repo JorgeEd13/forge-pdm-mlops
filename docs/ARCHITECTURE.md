@@ -9,8 +9,9 @@ A **canonical dataset config** (`configs/dataset.json`) + a **pinned generator**
 (`can-telemetry-forge`) reproduce the **full** telemetry dataset identically on any
 machine. A **data layer** turns its `readings` table into a leakage-safe modelling
 frame; a **training layer** fits two cheap models and logs both to **MLflow**,
-registering the winner; a **registry layer** governs stage→production promotion; a
-**serving layer** (**FastAPI**) exposes the production model; a **monitoring layer**
+registering the winner; a **registry layer** governs metric-gated promotion of a
+`production` **alias** + rollback; a **serving layer** (**FastAPI**) exposes exactly that
+aliased production model over HTTP; a **monitoring layer**
 (**Evidently**) measures drift when the generator's `season` shifts the
 distribution; and a **Prefect flow** ties detect→retrain→evaluate→promote into one
 DAG, scheduled on free cloud runners by **GitHub Actions**.
@@ -58,7 +59,7 @@ configs/dataset.json + pinned can-telemetry-forge
 | `diagnostics.py` | F2.6 model diagnostics (importance/calibration/threshold/learning-curve artifacts) + training watchers (overfit-gap, majority-baseline). |
 | `train.py` | Train both, log to MLflow, return the winner by the primary metric; optional tuned/cleaned/`--audit`/`--diagnose`. |
 | `registry.py` | **Metric-gated** promotion to a `production` **alias** (MLflow 3, not deprecated stages) + tag-recorded **rollback**. |
-| `serve.py` | FastAPI serving the **production** registry model. |
+| `serve.py` | FastAPI serving the `production`-**aliased** model (`/predict` → failure probabilities, `/health`, `/model-info`); lazy cached load via the native flavor; follows a promotion/rollback with no redeploy. |
 | `monitor.py` | Evidently drift report (baseline vs. season shift) + a drift decision. |
 | `flows.py` | Prefect flow: detect_drift → [branch] → retrain → evaluate → promote. |
 | `cli.py` | `pdm` entry point dispatching to the above. |

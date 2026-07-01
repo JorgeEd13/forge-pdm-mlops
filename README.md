@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F3%20%E2%80%94%20registry%20governance%20shipped-yellow" alt="Status: F3 — registry governance shipped">
+  <img src="https://img.shields.io/badge/status-F4%20%E2%80%94%20serving%20shipped-yellow" alt="Status: F4 — serving shipped">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
@@ -46,15 +46,16 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F3 (the production spine has started).** F0 (skeleton), F1 (real data layer +
+> ⚠️ **Honest status — F4 (the production spine is serving).** F0 (skeleton), F1 (real data layer +
 > leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
 > + model diagnostics + training watchers)**, **F2.7 (a temporal-modelling ladder — does
 > the trajectory help?)** and **F2.8 (characterize the ceiling — is the limit the model or the
 > data?)** are in place, closing the F2.\* modelling arc by design. **F3 (registry governance —
-> metric-gated promotion + rollback)** is the first build on the production spine. `serve` (F4)
-> and the drift loop (F5) are next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> metric-gated promotion + rollback)** and **F4 (FastAPI serving the `production`-aliased model,
+> Dockerfile + compose)** are the first two builds on the production spine. The drift → auto-retrain
+> loop (F5, the marquee) is next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 > Nothing here implies a live production deployment; the drift→retrain loop, once shipped, is a
 > **demonstrated closed loop on synthetic data**.
 >
@@ -270,13 +271,41 @@ pdm promote --version 7 --force   # promote a specific version, bypassing the ga
 pdm rollback                      # restore the previous production version
 ```
 
+## Serving the promoted model — FastAPI + Docker (F4)
+
+The registry decided *which* version is in production; serving *answers with it*
+([`serve.py`](src/pdm_mlops/serve.py)). The whole phase turns on one coupling: the app
+resolves the model through `models:/<name>@production` — the **same alias** promotion and
+rollback move — so a governance change is reflected **with no redeploy and no config edit**.
+
+- **`POST /predict`** — a batch of readings (the J1939 signals, era-NULL as JSON `null`) →
+  the per-row failure **probability** (not a thresholded label — the real model output the
+  gate measured). **`GET /health`** returns 200 even with nothing promoted (`model_loaded`
+  flag), so *up* ≠ *ready*; **`GET /model-info`** reports the live version and the metric it
+  was gated on — **auditable serving**.
+- **Probabilities via the native flavor.** MLflow's generic pyfunc predict returns labels;
+  the model is loaded through its native (LightGBM/sklearn) flavor — read from the model's
+  own `MLmodel` metadata, not a run tag MLflow 3 no longer writes — so both contenders serve
+  correctly ([ADR-009](docs/DECISIONS.md)).
+- **One command to see it end-to-end.** `docker compose up` brings up the serving API **and**
+  the MLflow UI on one shared registry volume, so you can watch which version the `production`
+  alias points at while `/predict` answers with it. The backend is env-overridable
+  (`MLFLOW_TRACKING_URI`), so the container serves the training host's registry with nothing
+  baked in. A `TestClient` round-trips a prediction — **asserted by test.**
+
+```bash
+pdm serve                         # FastAPI over the production-aliased model (127.0.0.1:8000)
+docker compose up --build         # serving (:8000) + the MLflow UI (:5000), one registry volume
+curl -s localhost:8000/health     # {"status":"ok","model_loaded":true,"model_version":"3"}
+```
+
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
 |---------|------|------|
 | Experiment tracking + model registry | **MLflow** | Local **SQLite** backend — no server, no cost. |
 | Model | **scikit-learn** + **LightGBM** | A LogReg baseline and a LightGBM contender, compared *through MLflow* — model selection as an MLOps process. |
-| Serving | **FastAPI** | Serves the promoted registry model. |
+| Serving | **FastAPI** | Serves the `production`-aliased model over HTTP; follows a promotion/rollback with no redeploy. |
 | Drift monitoring | **Evidently** | Baseline vs. a `season`-shifted distribution. |
 | Orchestration (the DAG) | **Prefect** | Authors `detect → retrain → evaluate → promote` with retries; runs in-process for tests. |
 | Scheduled cloud execution | **GitHub Actions** | Triggers the Prefect flow on a cron, on free runners. |
@@ -309,7 +338,7 @@ pdm sequence          # F2.7 — three-rung temporal ladder (per-row / temporal 
 pdm ceiling           # F2.8 — decomposition + fenced upper-bound + stacking redundancy probe (LIVE)
 pdm promote           # F3   — metric-gated promotion of a registered version to production (LIVE)
 pdm rollback          # F3   — restore the previous production version (LIVE)
-pdm serve             # F4   — FastAPI serving the promoted model
+pdm serve             # F4   — FastAPI serving the production-aliased model (LIVE)
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
 pdm monitor           # F5   — an Evidently drift report
 ```
@@ -328,7 +357,7 @@ pdm monitor           # F5   — an Evidently drift report
 | **F2.9** | ↗ *future work (deferred by design)* — task reframing to RUL / graded label |
 | **F2.10** | ↗ *future work (deferred by design)* — cross-dataset validation on **NASA C-MAPSS** |
 | **F3** | Model registry governance — **metric-gated promotion** to a `production` alias + **rollback** (a worse candidate does not promote; asserted) ✅ |
-| **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
+| **F4** | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production` alias + Dockerfile + compose (serving + MLflow UI); follows a promotion/rollback with no redeploy ✅ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |
 | **F6** | *(stretch)* hosted free-tier deploy → a live `/health` link ☐ |
 
