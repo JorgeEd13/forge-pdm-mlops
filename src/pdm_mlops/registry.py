@@ -247,10 +247,14 @@ def rollback(client: MlflowClient, name: str) -> str:
 
 
 def _client(tracking_uri: str | None = None) -> MlflowClient:
-    """An ``MlflowClient`` on the F2 SQLite backend (or an injected tmp URI in tests)."""
+    """An ``MlflowClient`` on the F2 SQLite backend (or an injected tmp URI in tests).
+
+    With no explicit URI it uses :func:`config.default_tracking_uri`, which honours the
+    ``MLFLOW_TRACKING_URI`` env var (so the F4 serving container reads a mounted
+    registry) and otherwise falls back to the local ``mlruns/`` SQLite backend.
+    """
     if tracking_uri is None:
-        config.MLRUNS_DIR.mkdir(parents=True, exist_ok=True)
-        tracking_uri = config.sqlite_tracking_uri(config.MLFLOW_DB)
+        tracking_uri = config.default_tracking_uri()
     return MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
 
 

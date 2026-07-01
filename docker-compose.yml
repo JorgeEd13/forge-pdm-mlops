@@ -1,0 +1,46 @@
+# forge-pdm-mlops — serving + the MLflow UI in one command (F4).
+#
+#   docker compose up --build
+#
+# Two services sharing one registry volume:
+#   * serving   — the FastAPI app over the production-aliased model (port 8000)
+#   * mlflow-ui — the MLflow tracking/registry UI (port 5000) on the same SQLite DB,
+#                 so you can *see* the runs, the registered versions, and which one the
+#                 `production` alias points at — the exact model `serving` answers with.
+#
+# The registry (SQLite tracking DB + model artifacts) lives on the shared `mlflow`
+# volume. Populate it by running training against the same DB path before serving:
+#   MLFLOW_TRACKING_URI=sqlite:///./mlflow/mlflow.db pdm train && ... pdm promote
+# (or bind-mount an existing mlruns/). Nothing is baked into the image, so a promotion
+# or rollback changes what `serving` returns with no rebuild — the point of a registry.
+
+services:
+  serving:
+    build: .
+    image: forge-pdm-mlops:serving
+    command: ["pdm", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      MLFLOW_TRACKING_URI: "sqlite:////mlflow/mlflow.db"
+    volumes:
+      - mlflow:/mlflow
+      - ./mlartifacts:/app/mlartifacts
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  mlflow-ui:
+    build: .
+    image: forge-pdm-mlops:serving
+    command: ["mlflow", "ui", "--backend-store-uri", "sqlite:////mlflow/mlflow.db", "--host", "0.0.0.0", "--port", "5000"]
+    volumes:
+      - mlflow:/mlflow
+      - ./mlartifacts:/app/mlartifacts
+    ports:
+      - "5000:5000"
+
+volumes:
+  mlflow:

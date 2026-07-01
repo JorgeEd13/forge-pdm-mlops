@@ -420,7 +420,9 @@ a `pdm sequence` subcommand that logs the three rungs to the same MLflow experim
 the winner — tabular or temporal — register. Tests stay offline/deterministic (a tiny CPU TCN
 on the fixture; windowing leakage asserted; same-seed determinism; the shared split proven
 row-identical to F1's). This is **F2.7**, a modelling phase that sits before F3 in execution;
-F3 (gated promotion) consequently becomes **ADR-008** and F5 (drift) **ADR-009**. F2.7 does
+F3 (gated promotion) consequently becomes **ADR-008**. (This note originally slated F5-drift
+for ADR-009; that number was later taken by **F4 serving** once F4 needed its own ADR, so F5
+drift is **ADR-013** — ADR-010 = F2.8, ADR-011/012 = the deferred F2.9/F2.10.) F2.7 does
 not touch the MLOps gate work — F3/F4/F5 remain the priority that the repo exists to close.
 
 **Outcome (measured — full data, GPU RTX 4050, seed 42, identical held-out rows).** The
@@ -523,6 +525,84 @@ version** (the DoD), plus first-promotion, tie, `min_delta` tolerance, `--force`
 and the loud errors on malformed input. No new dependency (MLflow is already core). F4
 serving loads the `production`-aliased version; F5's retrain loop ends in exactly this
 gated `promote`.
+
+---
+
+## ADR-009 — Serving: a FastAPI app over the `production`-**aliased** model; probabilities via the native flavor; env-overridable backend for the container
+
+**Date:** 2026-07-01 · **Phase:** F4 · **Status:** accepted
+
+**Context.** F3 makes "which version is in production" a governed alias. F4 has to
+*serve* that decision — turn readings into failure probabilities over HTTP — without
+re-introducing the folklore F3 removed. The phase turns on one coupling and a couple of
+smaller choices about *how* to load and *what* to return.
+
+**Decision.**
+
+1. **Serving resolves the model through the alias, not a pinned URI.** The app loads
+   `models:/<name>@production` — the same `registry.PRODUCTION_ALIAS` that `promote` /
+   `rollback` move. So a promotion or a rollback in F3 changes what `/predict` answers
+   with **no redeploy and no config edit**; the alias is the contract between governance
+   and serving. The load is **lazy and cached** (`ModelStore`): the app starts even with
+   nothing promoted (`/health` → `model_loaded=false`), and clearing the cache re-resolves
+   the alias — which is exactly what picking up a rollback needs.
+
+2. **Probabilities via the native flavor, not the pyfunc default.** MLflow's generic
+   `pyfunc` predict returns thresholded *labels* for the sklearn/LightGBM flavors we log,
+   but the product is the failure **probability** (the positive-class column, the
+   `models.Model.predict_proba` contract F2 trains and F3 gates against). So the model is
+   loaded through its **native flavor** — read from the registered version's
+   log-model-history tag, so a lightgbm winner and a logreg winner both serve correctly —
+   and column 1 is returned. Serving what the gate measured keeps the whole pipeline
+   coherent.
+
+3. **era-NULL is a valid input, not a 422.** A missing signal (JSON `null`) is the
+   era-NULL missingness ADR-003 preserves — a real, informative pattern the model handles
+   (LightGBM natively, the LogReg pipeline via its imputer). `/predict` reindexes each
+   request to the fixed `features.FEATURE_COLUMNS` order (so JSON key order can't scramble
+   the frame), coerces to numeric with missing → NaN, and re-runs `assert_no_leakage` as a
+   belt-and-braces guard. Healthy-but-not-ready is distinguished: `/health` returns 200
+   even with no model; `/predict` and `/model-info` return **503** (not 500) when nothing
+   is promoted.
+
+4. **The backend is env-overridable so the container needs no code change.** A new
+   `config.default_tracking_uri()` honours the standard `MLFLOW_TRACKING_URI` env var and
+   otherwise falls back to the local `mlruns/` SQLite backend; `registry._client()` and the
+   serving `ModelStore` both route through it. The Docker image points that var at a mounted
+   registry volume — so the container serves the training host's registry with nothing baked
+   in, and a promotion/rollback still flows through with no rebuild.
+
+5. **The load touches NO global MLflow state — it resolves through the injected client to a
+   local path.** The obvious `mlflow.<flavor>.load_model("models:/<name>@production")`
+   resolves that URI through MLflow's **process-global** registry URI, and MLflow 3
+   **pins** that URI once set — `set_registry_uri(None)` does *not* un-pin it (verified). So
+   a serve load in one process would silently redirect a co-resident `train`'s
+   `register_model` to the wrong backend — a real leak a two-model round-trip caught (the
+   second model registered into the first's registry). Instead `ModelStore` resolves the
+   `production` alias to a concrete `version` via the injected `MlflowClient`, asks that
+   client for the version's artifact URI, `download_artifacts` normalises it (the raw URI is
+   a Windows-hostile `file:C:/…` form) to a local path, and the flavor loader reads *that
+   path* — no `models:/` resolution, no global URI mutation. The flavor itself is read from
+   the model's own `MLmodel` metadata (`get_model_info().flavors`), **not** the
+   `mlflow.log-model.history` run tag MLflow 3 no longer writes.
+
+**Why.** The questions a reviewer asks of a served model are: *which governed version is
+this? does it follow a rollback? is it the probability the gate measured?* F4 answers each
+as tested behaviour — an alias-resolved load, a native-flavor probability, a 503 vs. 200
+readiness split — on the same server-free SQLite backend, with the model still deliberately
+cheap and the plumbing the deliverable.
+
+**Consequences.** New `serve.py` (`create_app`, `ModelStore` with a client-resolved,
+global-state-free load, `PredictRequest`/`Response`, `ModelInfo`) + `pdm serve --host/--port`
+(uvicorn). `Dockerfile` (slim, `[serve]` extra, libgomp for LightGBM) + `docker-compose.yml`
+(serving + the MLflow UI on one shared registry volume — you can *see* the version the alias
+points at). `config.default_tracking_uri` (env-overridable) threads into `registry._client`.
+The `[serve]` extra (fastapi/uvicorn/httpx) was already declared at F0. `test_serve.py` (11,
+offline, tmp SQLite): the DoD **prediction round-trip** on a promoted fixture-trained model,
+the health/model-info surface, the era-NULL passthrough + column reorder, the 503-without-a-model
+paths, and a rollback picked up by a fresh store load — the multi-test run is what surfaced the
+global-URI leak (decision 5), since only a second train-in-the-same-process exposes it. F5's
+retrain loop will exercise exactly this serving surface after it promotes.
 
 ---
 

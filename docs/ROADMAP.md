@@ -16,7 +16,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F2.9** | ↗ future work *(deferred by design)* | **Task reframing — does the binary target hide the ramp?** Reframe to **RUL / graded severity** (the PdM task where the trajectory carries separable signal) and re-run the ladder + a stack. Identified and scoped, **intentionally not built**: it's a deep-learning/modelling axis better owned by a dedicated DL showcase than buried in this MLOps repo — the spine (F3+) is the priority (ADR-011) |
 | **F2.10** | ↗ future work *(deferred by design)* | **Cross-dataset validation — does the conclusion generalize?** Run the same ladder on **NASA C-MAPSS** (the canonical public RUL benchmark where temporal models win). Scoped, **intentionally not built** for the same reason as F2.9 — a generalization claim worth making in its own focused artifact, not as a sub-phase of the production showcase (ADR-012) |
 | **F3** | ✅ done | Model registry governance: metric-gated **promotion** to a `production` **alias** (MLflow 3, not deprecated stages) + **rollback** to the prior version. **A worse candidate does not promote** (asserted); rollback restores the previous production version (ADR-008) |
-| **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
+| **F4** | ✅ done | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production`-**aliased** model + Dockerfile + compose (serving + MLflow UI). A promotion/rollback (F3) changes what `/predict` answers with **no redeploy**; probabilities via the native flavor; `TestClient` round-trips a prediction (ADR-009) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
 | **F6** | ☐ | *(stretch)* hosted free-tier deploy (Fly.io / Render / HF Spaces) → a live `/health` link |
 
@@ -264,7 +264,7 @@ below in full so the judgment (and the scoping) is on the record.
   a drift decision). `flows.py` Prefect flow `detect_drift → [if drift] →
   retrain(compare) → evaluate → promote-or-hold`, tasks with retries.
   `.github/workflows/retrain.yml` runs it on a schedule on cloud runners.
-  ADR-009 (drift metric + retrain trigger policy). DEMO.md + a GIF.
+  ADR-013 (drift metric + retrain trigger policy). DEMO.md + a GIF.
 - **DoD.** Flow runs **in-process** in tests on the fixture; the drift branch fires
   and a model is promoted; the scheduled workflow is wired.
 

@@ -4,6 +4,44 @@ Updated: 2026-07-01
 
 ## Current focus
 
+**F4 (Serving — FastAPI over the promoted model) — DONE (2026-07-01). The second spine
+build: the governed version F3 promotes is now served over HTTP (ADR-009).** New
+`serve.py` — a FastAPI app that resolves the model through `models:/<name>@production`
+(the same alias `registry` moves), so a promotion or rollback changes what `/predict`
+answers **with no redeploy**:
+
+- **`POST /predict`** — a batch of readings (the J1939 signals, era-NULL allowed as JSON
+  `null`) → the per-row failure **probability** (positive class, the `models.Model`
+  contract F2/F3 use). The frame is reindexed to the fixed `features.FEATURE_COLUMNS`
+  order (JSON key order can't scramble it), missing → NaN, and `assert_no_leakage` re-runs.
+- **`GET /health`** — 200 even with nothing promoted (`model_loaded=false`), so an
+  orchestrator can tell "process up" from "ready to serve"; **`GET /model-info`** — the
+  live production version + the metric it was gated on (auditable serving). Both 503 (not
+  500) when nothing is promoted.
+- **Probabilities via the native flavor, not pyfunc.** MLflow's generic pyfunc predict
+  returns thresholded labels for our flavors; the product is the probability. The flavor
+  is read from the model's own `MLmodel` metadata (`get_model_info().flavors`) — **not the
+  `mlflow.log-model.history` run tag, which MLflow 3 no longer writes** (a real bug the
+  first test caught: the fixture winner is lightgbm and a sklearn-flavor fallback load
+  raised) — so a lightgbm or a logreg winner both serve correctly.
+- **Lazy, cached load (`ModelStore`)** — the app starts before anything is promoted;
+  clearing the cache re-resolves the alias, which is exactly picking up a rollback.
+- **`Dockerfile` + `docker-compose.yml`** (serving + the MLflow UI on one shared registry
+  volume). `config.default_tracking_uri()` honours `MLFLOW_TRACKING_URI`, so the container
+  serves the training host's registry with nothing baked in. `pdm serve --host/--port`.
+- **`test_serve.py` (11, offline, tmp SQLite):** the DoD **prediction round-trip** on a
+  promoted fixture-trained model, health/model-info, the era-NULL passthrough + column
+  reorder, the 503-without-a-model paths, and a rollback picked up by a fresh store load.
+  **111 tests total** (100 + 11). **ADR-009.**
+
+  > **Verification note (2026-07-01):** on the low-end i3 desktop the last full run reached
+  > **79 tests with zero failures** before the machine wedged on a heavy-training test — the
+  > known CPU-TCN / repeated-training stall ([[resources_compute]]), *not* a code defect. The
+  > F4 no-global-state load fix was independently confirmed end-to-end by a **two-iteration
+  > train→serve→train repro** ("PASS both isolated" — a lightgbm *and* a logreg winner each
+  > served correctly, no cross-registration leak). **The clean full 111-green `pytest` run is
+  > pending on the notebook (GPU/faster CPU);** re-run there to record it.
+
 **F3 (Registry + gated promotion + rollback) — DONE (2026-07-01). The first build on the
 MLOps spine the repo exists to close (ADR-008).** Governed model lifecycle on the same MLflow
 SQLite registry F2 already writes to: a `production` **alias** (MLflow 3 deprecated the classic
@@ -371,21 +409,43 @@ runnable skeleton — closed at an earlier boundary.)
   nothing-promoted raise, unknown-version / no-metric raise, `latest_version`, alias-unset →
   None). MLflow → tmp SQLite; all offline. **100 total green offline** (86 + 14). **ADR-008.**
 
+### F4 — Serving (2026-07-01)
+
+- **`serve.py`** — `create_app()` (FastAPI) + `ModelStore` (lazy, cached resolution of the
+  `production` alias). `/predict` (readings → per-row failure probability), `/health` (200
+  even with no model, `model_loaded` flag), `/model-info` (live version + gated metric).
+  `_load_predict_proba` **touches no global MLflow state**: it resolves the alias to a version
+  via the injected client, `download_artifacts` to a local path, and loads that — because a
+  `models:/@alias` load pins MLflow 3's process-global registry URI (`set_registry_uri(None)`
+  does *not* un-pin it) and would redirect a co-resident `train`'s `register_model` (a real
+  leak the multi-test run caught). Flavor read from the model's own `MLmodel` metadata
+  (`get_model_info().flavors`, not the MLflow-3-dropped run-history tag); returns the
+  positive-class column. `_to_frame` reindexes to `FEATURE_COLUMNS`, coerces to numeric
+  (era-NULL → NaN), re-runs `assert_no_leakage`. 503 (not 500) when nothing is promoted.
+- **`config.default_tracking_uri()`** — honours `MLFLOW_TRACKING_URI` (the container path)
+  else the local `mlruns/` SQLite; `registry._client()` routes through it.
+- **`cli.py`** — `pdm serve --host/--port` runs uvicorn on the app.
+- **`Dockerfile`** (slim, `[serve]` extra, libgomp for LightGBM) + **`docker-compose.yml`**
+  (serving + MLflow UI on one shared registry volume, nothing baked in).
+- **Tests** — `test_serve.py` (11: predict round-trip on a promoted fixture-trained model
+  (the DoD), era-NULL passthrough, column reorder, health-loaded/-empty, model-info,
+  predict/model-info 503 without a model, rollback picked up by a fresh store load, empty
+  batch 422). Offline, tmp SQLite. **111 total green offline** (100 + 11). **ADR-009.**
+
 ## Next step (concrete)
 
-**F3 (registry + gated promotion + rollback, ADR-008) is DONE — the first spine build shipped.**
-The registry now governs which version is in production and how one gets there or gets undone.
+**F4 (serving the promoted model, FastAPI + Docker, ADR-009) is DONE — the second spine
+build shipped.** The governed version F3 promotes is now served over HTTP, following the
+alias with no redeploy.
 
-**F4 — Serving is the concrete NEXT build. FastAPI over the *promoted* model.** `serve.py`: load
-the `production`-aliased version from the registry (`models:/<name>@production`) and expose
-`/predict` (readings → failure probabilities), `/health`, `/model-info` (the live version).
-`Dockerfile` + `docker-compose.yml` bring up serving + the MLflow UI in one command. DoD: a
-`TestClient` round-trips a prediction; compose brings up both services. Tests stay offline
-(`TestClient`, a version promoted on a tmp registry, the fixture). This consumes F3 directly —
-serving reads exactly the alias F3 moves.
-
-**Then F5 → F6 (the rest of the spine).** F5 is the marquee (drift → auto-retrain loop, ending
-in exactly F3's gated `promote`); F6 is the stretch hosted deploy. A complete production spine
+**F5 — the marquee is the concrete NEXT build: drift monitoring + the auto-retrain loop.**
+`monitor.py` (Evidently: baseline vs. a `--season heatwave` shift + a drift decision) +
+`flows.py` (Prefect `detect_drift → [if drift] → retrain(compare) → evaluate →
+promote-or-hold`, ending in exactly F3's gated `promote`) + `.github/workflows/retrain.yml`
+on a schedule. DoD: the flow runs **in-process** in tests on the fixture, the drift branch
+fires and a model is promoted, the scheduled workflow is wired. ADR-013 (drift metric +
+retrain trigger policy — ADR-009 went to F4 serving; ADR-011/012 are the deferred F2.9/F2.10).
+Then F6 is the stretch hosted deploy. A complete production spine
 (train → registry → serve → drift → retrain → cloud) is the rare portfolio signal.
 
 **Still outstanding on F2.8 (not a blocker):** a **GPU `pdm ceiling` run on the full dataset** to
