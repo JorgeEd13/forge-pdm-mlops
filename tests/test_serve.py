@@ -13,10 +13,20 @@ from __future__ import annotations
 import mlflow
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
 from mlflow.tracking import MlflowClient
 
-from pdm_mlops import config, features, registry, serve, train
+# FastAPI/uvicorn/httpx live in the optional `[serve]` extra (F4/ADR-009) — the package
+# and core CI stay light without it (cli.py imports serve.py lazily, only for `pdm serve`).
+# The whole serving surface needs the extra, so skip the *entire module* cleanly when it is
+# absent (CI installs only `[dev]`), rather than forcing FastAPI/httpx into core CI. This
+# mirrors the `[tune]`/`[deep]` skip pattern (test_tune.py / test_sequence.py). The import of
+# `fastapi.testclient` itself pulls in httpx, so it must sit behind the skip too.
+pytest.importorskip("fastapi", reason="needs the `[serve]` extra (F4/ADR-009)")
+pytest.importorskip("httpx", reason="needs the `[serve]` extra (F4/ADR-009)")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from pdm_mlops import config, features, registry, serve, train  # noqa: E402
 
 NAME = config.REGISTERED_MODEL_NAME
 
