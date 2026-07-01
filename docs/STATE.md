@@ -4,6 +4,34 @@ Updated: 2026-07-01
 
 ## Current focus
 
+**F3 (Registry + gated promotion + rollback) — DONE (2026-07-01). The first build on the
+MLOps spine the repo exists to close (ADR-008).** Governed model lifecycle on the same MLflow
+SQLite registry F2 already writes to: a `production` **alias** (MLflow 3 deprecated the classic
+stages, so promotion moves an alias, not a stage) that promotion re-points **only when a
+candidate clears the eval-metric gate**, and a **rollback** that restores the version it
+superseded. New `registry.py`:
+
+- **`promote(client, name, version, *, gate, min_delta)`** — reads the candidate's and the
+  incumbent's ROC-AUC from their **source runs** (the metric `train` logged before registering),
+  and moves the `production` alias only if `candidate >= incumbent - min_delta`. **A strictly
+  worse candidate does NOT promote** (the DoD) — and that rejection is a *governed outcome*, a
+  structured `PromotionResult(promoted=False, …)`, **not** an exception. `min_delta=0.0` default
+  (ties promote — newer wins on equal evidence); first-ever promotion always passes (nothing to
+  protect yet); `gate=False` is the `--force` escape hatch. Only a malformed *request* (unknown
+  version / a run with no logged metric) raises `PromotionError`.
+- **`rollback(client, name)`** — restores the prior production version. Deterministic via a
+  `superseded_production_version` **tag** written on each promoted version (no run-history
+  scraping); raises if nothing is promoted or the current version was the first (no predecessor).
+- **`production_version` / `version_metric` / `latest_version` / `format_promotion`** round it
+  out. All versions normalised to **str** at the boundary (MLflow returns int on some paths,
+  str on others — a real inconsistency the surface hides).
+- **`pdm promote` (`--version`/`--min-delta`/`--force`) + `pdm rollback`** live; `pdm promote`
+  exits non-zero on a gate rejection so a CI/script step notices.
+- **`test_registry.py` (14, offline, tmp SQLite):** the two DoD assertions (worse candidate does
+  not promote; rollback restores the prior version) + first-promotion / tie / `min_delta`
+  tolerance / `--force` bypass / loud errors on malformed input / `latest_version` / alias-unset.
+  **100 tests green offline** (86 + 14). **ADR-008.**
+
 **F2.8 (Characterize the ceiling — is the limit the data or the model?) — BUILT, offline-tested
 (full-data numbers pending a GPU `pdm ceiling` run). The capstone that closes the F2.* arc.**
 The honest close of the F2.5→F2.7 investigation: stop *asserting* "0.82 is the data's
@@ -327,23 +355,42 @@ runnable skeleton — closed at an earlier boundary.)
 - **Pending:** the reported full-data numbers land on a GPU `pdm ceiling` run (fixture numbers
   are artifacts).
 
+### F3 — Registry + gated promotion + rollback (2026-07-01)
+
+- **`registry.py`** — governance on the F2 registry. `promote` (metric-gated `production`-alias
+  move, structured `PromotionResult`), `rollback` (tag-recorded predecessor restore),
+  `production_version` / `version_metric` / `latest_version` / `format_promotion`. **Aliases,
+  not the MLflow-3-deprecated stages** (ADR-008). A rejection is a governed *outcome*, not an
+  exception; malformed requests raise `PromotionError`. Versions normalised to str at the
+  boundary.
+- **`cli.py`** — `pdm promote` (`--version` defaults to the latest registered, `--min-delta`,
+  `--force`) + `pdm rollback` live; `pdm promote` exits 1 on a gate rejection.
+- **Tests** — `test_registry.py` (14: **worse candidate does not promote** + **rollback restores
+  the prior version** (the DoD), better-promotes, first-promotion-no-incumbent, tie-promotes,
+  `min_delta` tolerates a small regression, `--force` bypass, rollback-without-predecessor /
+  nothing-promoted raise, unknown-version / no-metric raise, `latest_version`, alias-unset →
+  None). MLflow → tmp SQLite; all offline. **100 total green offline** (86 + 14). **ADR-008.**
+
 ## Next step (concrete)
 
-**F2.8 is built + offline-tested — the modelling investigation stops here by design.** One thing
-outstanding on it: a **GPU `pdm ceiling` run on the full dataset** to record the reported
-decomposition / upper-bound / probe numbers (the fixture numbers are artifacts). Optionally fold
-the F2.7 TCN's OOF into the probe via the `extra_oof` seam on that same run. Not a blocker for F3.
+**F3 (registry + gated promotion + rollback, ADR-008) is DONE — the first spine build shipped.**
+The registry now governs which version is in production and how one gets there or gets undone.
 
-**F3 — Registry + promotion is the concrete NEXT build (ADR-008). The MLOps spine the repo exists
-to close.** Governed model lifecycle on the same MLflow SQLite registry F2 already writes to.
-`registry.py`: register the winner, **stage→production promotion gated by the eval metric**, and
-rollback. DoD: a *worse* candidate does **not** promote (asserted); rollback restores the prior
-production version. Build it on the (tabular or temporal) winner F2.6/F2.7 produces; tests stay
-offline (tmp SQLite, the fixture).
+**F4 — Serving is the concrete NEXT build. FastAPI over the *promoted* model.** `serve.py`: load
+the `production`-aliased version from the registry (`models:/<name>@production`) and expose
+`/predict` (readings → failure probabilities), `/health`, `/model-info` (the live version).
+`Dockerfile` + `docker-compose.yml` bring up serving + the MLflow UI in one command. DoD: a
+`TestClient` round-trips a prediction; compose brings up both services. Tests stay offline
+(`TestClient`, a version promoted on a tmp registry, the fixture). This consumes F3 directly —
+serving reads exactly the alias F3 moves.
 
-**Then F4 → F5 → F6 (the rest of the spine).** A complete
-production spine (train → registry → serve → drift → retrain → cloud) is the rare portfolio
-signal; finishing it beats polishing the modelling branch.
+**Then F5 → F6 (the rest of the spine).** F5 is the marquee (drift → auto-retrain loop, ending
+in exactly F3's gated `promote`); F6 is the stretch hosted deploy. A complete production spine
+(train → registry → serve → drift → retrain → cloud) is the rare portfolio signal.
+
+**Still outstanding on F2.8 (not a blocker):** a **GPU `pdm ceiling` run on the full dataset** to
+record the reported decomposition / upper-bound / probe numbers (the fixture numbers are
+artifacts). Optionally fold the F2.7 TCN's OOF into the probe via the `extra_oof` seam.
 
 **F2.9 (RUL / graded label, ADR-011) and F2.10 (C-MAPSS, ADR-012) — FUTURE WORK, DEFERRED BY
 DESIGN (2026-06-27, career-wide decision).** Both are scoped in full in `ROADMAP.md` but
@@ -365,11 +412,11 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — **F2.8 (characterize the ceiling, ADR-010) is built and offline-tested at
-this boundary** (86 tests green on the i3), closing the F2.* modelling arc; F2.9 / F2.10 stay
-deferred by design; **F3 (registry + gated promotion, ADR-008) is the next build** — the MLOps
-gate the repo exists to close. Outstanding on F2.8: a GPU `pdm ceiling` full-data run for the
-reported numbers (not a blocker for F3).
+One phase per session — **F3 (registry + gated promotion + rollback, ADR-008) shipped at this
+boundary** (100 tests green on the i3): the first build on the MLOps spine, closing the
+registry-governance gate. The F2.* modelling arc stays closed (F2.9/F2.10 deferred by design).
+**F4 (serving the promoted model, FastAPI + Docker) is the next build.** Outstanding on F2.8: a
+GPU `pdm ceiling` full-data run for the reported numbers (not a blocker for F4).
 
 ## Notes
 

@@ -57,7 +57,7 @@ configs/dataset.json + pinned can-telemetry-forge
 | `tune.py` | F2.6 **grouped-CV Optuna** HPO per model on the cleaned frame; tracked to MLflow; tuned params feed `train`. |
 | `diagnostics.py` | F2.6 model diagnostics (importance/calibration/threshold/learning-curve artifacts) + training watchers (overfit-gap, majority-baseline). |
 | `train.py` | Train both, log to MLflow, return the winner by the primary metric; optional tuned/cleaned/`--audit`/`--diagnose`. |
-| `registry.py` | Register + **metric-gated** stage→production promotion + rollback. |
+| `registry.py` | **Metric-gated** promotion to a `production` **alias** (MLflow 3, not deprecated stages) + tag-recorded **rollback**. |
 | `serve.py` | FastAPI serving the **production** registry model. |
 | `monitor.py` | Evidently drift report (baseline vs. season shift) + a drift decision. |
 | `flows.py` | Prefect flow: detect_drift → [branch] → retrain → evaluate → promote. |

@@ -7,10 +7,10 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F2.8%20%E2%80%94%20modelling%20arc%20closed-yellow" alt="Status: F2.8 — modelling arc closed">
+  <img src="https://img.shields.io/badge/status-F3%20%E2%80%94%20registry%20governance%20shipped-yellow" alt="Status: F3 — registry governance shipped">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tracking-MLflow-0194E2" alt="MLflow">
+  <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
   <img src="https://img.shields.io/badge/serving-FastAPI-009688" alt="FastAPI">
   <img src="https://img.shields.io/badge/orchestration-Prefect-070E10" alt="Prefect">
   <img src="https://img.shields.io/badge/data-100%25%20synthetic-blueviolet" alt="100% synthetic data">
@@ -46,14 +46,15 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F2.8 (the modelling arc is closed).** F0 (skeleton), F1 (real data layer +
+> ⚠️ **Honest status — F3 (the production spine has started).** F0 (skeleton), F1 (real data layer +
 > leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
 > + model diagnostics + training watchers)**, **F2.7 (a temporal-modelling ladder — does
 > the trajectory help?)** and **F2.8 (characterize the ceiling — is the limit the model or the
-> data?)** are in place, closing the F2.\* modelling arc by design. `serve`, the registry
-> promotion gate, and the drift loop land across F3–F5 — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> data?)** are in place, closing the F2.\* modelling arc by design. **F3 (registry governance —
+> metric-gated promotion + rollback)** is the first build on the production spine. `serve` (F4)
+> and the drift loop (F5) are next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 > Nothing here implies a live production deployment; the drift→retrain loop, once shipped, is a
 > **demonstrated closed loop on synthetic data**.
 >
@@ -243,6 +244,32 @@ pdm sequence --epochs 12 --register   # full TCN run on the GPU; register the wi
 pdm ceiling                       # F2.8 — decomposition + fenced upper-bound + stacking redundancy probe
 ```
 
+## Governed model lifecycle — promotion + rollback (F3)
+
+The modelling arc closed; the **production spine** begins here. F2 *registers* the winning
+version — F3 **governs** which version is actually in production, and how a new one gets there
+or gets undone ([`registry.py`](src/pdm_mlops/registry.py)):
+
+- **Production is a model-version *alias*, not a stage.** MLflow 3 **deprecated** the classic
+  `Staging`/`Production` stage transitions in favour of **aliases**, so "production" is an alias
+  that points at exactly one version — promotion re-points it, rollback re-points it back, and
+  serving (F4) will load `models:/<name>@production`. Built on the current API, not the
+  deprecated one ([ADR-008](docs/DECISIONS.md)).
+- **A worse candidate does not promote.** `promote` reads the candidate's and the incumbent's
+  ROC-AUC from their MLflow **source runs** and moves the alias only if
+  `candidate ≥ incumbent − min_delta`. A rejection is a **governed outcome** — a structured
+  result with both metrics and a reason, *not* an exception (only a malformed request raises);
+  `pdm promote` exits non-zero on a rejection so a CI step notices. **Asserted by test.**
+- **Deterministic rollback.** Each promotion tags the superseded version on the new one, so
+  `rollback` restores the previous production version with no run-history scraping. **Asserted
+  by test.**
+
+```bash
+pdm promote                       # gate the latest registered version → production (metric-gated)
+pdm promote --version 7 --force   # promote a specific version, bypassing the gate
+pdm rollback                      # restore the previous production version
+```
+
 ## The stack (and why two orchestration layers)
 
 | Concern | Tool | Note |
@@ -279,6 +306,9 @@ pdm train             # F2   — train both models, track to MLflow, register th
 pdm detect            # F2.5 — run the outlier-detection ladder, scored vs. ground truth (LIVE)
 pdm tune              # F2.6 — grouped-CV Optuna HPO on the cleaned inputs, tracked (LIVE)
 pdm sequence          # F2.7 — three-rung temporal ladder (per-row / temporal / causal TCN) (LIVE)
+pdm ceiling           # F2.8 — decomposition + fenced upper-bound + stacking redundancy probe (LIVE)
+pdm promote           # F3   — metric-gated promotion of a registered version to production (LIVE)
+pdm rollback          # F3   — restore the previous production version (LIVE)
 pdm serve             # F4   — FastAPI serving the promoted model
 pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
 pdm monitor           # F5   — an Evidently drift report
@@ -294,10 +324,10 @@ pdm monitor           # F5   — an Evidently drift report
 | **F2.5** | **Outlier robustness (clean first)** — multivariate + temporal + autoencoder anomaly detection on signals, scored vs. ground-truth labels → a leakage-safe `signal_suspect` feature ✅ |
 | **F2.6** | Tune + diagnose — grouped-CV Optuna HPO on the cleaned inputs + model diagnostics + training watchers ✅ |
 | **F2.7** | **Temporal modelling** — a three-rung ladder (per-row → temporal-features → causal **TCN**); temporal helps a little, the deep model doesn't earn its place (measured, reported either way) ✅ |
-| **F2.8** | *(next)* Characterize the ceiling — horizon/mode AUC decomposition + leaky upper-bound + stacking redundancy probe; the capstone that closes the F2.* arc ☐ |
+| **F2.8** | Characterize the ceiling — horizon/mode AUC decomposition + leaky upper-bound + stacking redundancy probe; the capstone that closes the F2.* arc ✅ |
 | **F2.9** | ↗ *future work (deferred by design)* — task reframing to RUL / graded label |
 | **F2.10** | ↗ *future work (deferred by design)* — cross-dataset validation on **NASA C-MAPSS** |
-| **F3** | Model registry — gated stage→production promotion + rollback ☐ |
+| **F3** | Model registry governance — **metric-gated promotion** to a `production` alias + **rollback** (a worse candidate does not promote; asserted) ✅ |
 | **F4** | Serving — FastAPI + Dockerfile + compose (serving + MLflow UI) ☐ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |
 | **F6** | *(stretch)* hosted free-tier deploy → a live `/health` link ☐ |

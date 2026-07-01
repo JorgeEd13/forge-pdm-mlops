@@ -465,6 +465,67 @@ on this data) and closes the question. (A 12-trial / capped-space / short-epoch 
 engineering verdict is firm: representation was the right lever; *deep*, and *tuning the deep*,
 were not.)
 
+## ADR-008 — Governed model lifecycle: metric-gated promotion + rollback on MLflow **aliases** (not deprecated stages)
+
+**Date:** 2026-07-01 · **Phase:** F3 · **Status:** accepted
+
+**Context.** F2 registers the winning model *version* in the MLflow Model Registry, but
+"which version is actually **in production**, and how does a new one get there (or get
+undone)" was still folklore. F3 is the MLOps-spine gate the repo exists to close: a
+**governed lifecycle** — a promotion that a *worse* model cannot pass, and a **rollback**
+that restores the previously-live version — as tested, reproducible mechanism, not a
+manual click in a UI. Two design questions fell out of building it on MLflow 3.
+
+**Decision.**
+
+1. **Production is a model-version *alias*, not a stage.** MLflow 3 **deprecated** the
+   classic `Staging`/`Production` **stage** transitions (`transition_model_version_stage`)
+   in favour of **model-version aliases**. So "production" here is an alias
+   (`registry.PRODUCTION_ALIAS = "production"`) that points at exactly one version.
+   Promotion re-points the alias; rollback re-points it back; serving (F4) will load
+   `models:/<name>@production`. Building on the *current* API (aliases) rather than the
+   deprecated one is the honest, forward-looking choice — and aliases are strictly more
+   flexible (arbitrary named pointers, not a fixed four-stage enum).
+
+2. **The gate reads each version's metric from its source run.** A candidate is compared
+   against the incumbent production version on the primary metric
+   (`config.PRIMARY_METRIC`, ROC-AUC), read from the run `train` logged it on before
+   registering. It promotes only if `candidate >= incumbent - min_delta`. The default
+   `min_delta = 0.0` means "at least as good"; a tie promotes (the newer version wins on
+   equal evidence — a deliberate, documented choice), and a small `min_delta` can tolerate
+   a negligible regression when a newer version is preferred for other reasons. A
+   **first-ever** promotion (no incumbent) always passes — there is nothing to protect yet.
+
+3. **A rejection is a governed *outcome*, not an error.** A worse candidate not promoting
+   is the gate **working**, so `promote` returns a structured `PromotionResult`
+   (`promoted=False` + the compared metrics + a human reason), not an exception. Only a
+   malformed *request* — an unknown version, or a version whose run never logged the metric
+   so the gate has nothing to compare — raises `PromotionError`. (The `pdm promote` CLI
+   still exits non-zero on a rejection, so a script/CI step notices.)
+
+4. **Rollback is deterministic via a superseding tag.** On a successful promotion the
+   version it supersedes is written as a tag (`PREV_TAG`) on the newly-promoted version, so
+   `rollback` restores the prior production version by reading that tag — no run-history
+   scraping, fully offline-testable. A first-ever production version has no predecessor and
+   `rollback` raises rather than guess.
+
+**Why.** The questions a reviewer asks of a "production model" are exactly these: *can a
+worse model reach production? how do you undo a bad promotion? where is that decision
+recorded?* F3 answers each as a tested invariant — a gated alias move, a tag-based
+rollback, a structured decision record — on the same server-free SQLite registry as F2.
+The model is still deliberately cheap; the **governance around it** is the deliverable.
+
+**Consequences.** New `registry.py` (`production_version`, `version_metric`,
+`latest_version`, `promote`, `rollback`, `format_promotion`) + `pdm promote`
+(`--version`/`--min-delta`/`--force`) and `pdm rollback`. `test_registry.py` (14, offline,
+tmp SQLite): **a worse candidate does not promote** and **rollback restores the prior
+version** (the DoD), plus first-promotion, tie, `min_delta` tolerance, `--force` bypass,
+and the loud errors on malformed input. No new dependency (MLflow is already core). F4
+serving loads the `production`-aliased version; F5's retrain loop ends in exactly this
+gated `promote`.
+
+---
+
 ## ADR-010 — Characterize the ceiling: measure that 0.82 is the *data's* information limit — decomposition + a fenced label-leaking upper-bound + an OOF stacking redundancy probe
 
 **Date:** 2026-07-01 · **Phase:** F2.8 · **Status:** **accepted — built and offline-tested; the reported full-data numbers land on a GPU/full-data run** (the CPU rungs and both verdicts are decidable on this hardware; the TCN's contribution enters through a seam)

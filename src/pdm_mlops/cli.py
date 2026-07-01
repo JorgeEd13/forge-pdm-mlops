@@ -7,6 +7,8 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm tune      # F2.6 — grouped-CV Optuna HPO on the cleaned inputs (LIVE)
     pdm sequence  # F2.7 — three-rung temporal ladder (per-row / temporal / TCN) (LIVE)
     pdm ceiling   # F2.8 — characterize the ceiling: decomposition + bound + stack probe (LIVE)
+    pdm promote   # F3  — metric-gated promotion of a registered version to production (LIVE)
+    pdm rollback  # F3  — restore the previous production version (LIVE)
     pdm serve     # F4  — FastAPI serving the promoted model
     pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
     pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
@@ -122,6 +124,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--window", type=int, default=None, help="temporal-features lookback in rows (default 24)"
     )
 
+    promote_p = sub.add_parser(
+        "promote",
+        help="metric-gated promotion of a registered version to production (F3)",
+    )
+    promote_p.add_argument(
+        "--version",
+        default=None,
+        help="registered version to promote (default: the latest, i.e. the one just trained)",
+    )
+    promote_p.add_argument(
+        "--min-delta",
+        type=float,
+        default=None,
+        help="gate tolerance: promote if candidate >= incumbent - min_delta (default 0.0)",
+    )
+    promote_p.add_argument(
+        "--force",
+        action="store_true",
+        help="bypass the metric gate and promote unconditionally",
+    )
+    sub.add_parser("rollback", help="restore the previous production version (F3)")
+
     sub.add_parser("serve", help="serve the promoted model with FastAPI (F4)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
@@ -204,6 +228,33 @@ def main(argv: list[str] | None = None) -> int:
             readings, seed=args.seed, window=args.window or _seq.DEFAULT_WINDOW
         )
         print(_ceiling.format_report(report))
+        return 0
+    if args.command == "promote":
+        from . import config as _config
+        from . import registry as _registry
+
+        client = _registry._client()
+        name = _config.REGISTERED_MODEL_NAME
+        version = args.version or _registry.latest_version(client, name)
+        result = _registry.promote(
+            client,
+            name,
+            version,
+            gate=not args.force,
+            min_delta=(
+                args.min_delta if args.min_delta is not None else _registry.DEFAULT_MIN_DELTA
+            ),
+        )
+        print(_registry.format_promotion(result))
+        return 0 if result.promoted else 1
+    if args.command == "rollback":
+        from . import config as _config
+        from . import registry as _registry
+
+        client = _registry._client()
+        name = _config.REGISTERED_MODEL_NAME
+        restored = _registry.rollback(client, name)
+        print(f"Rolled back '{name}': production is now v{restored}.")
         return 0
     if args.command == "serve":
         return _not_yet("F4")
