@@ -9,11 +9,22 @@ search is deterministic (same seed → same best params), and the study is track
 
 from __future__ import annotations
 
+import importlib.util
+
 import mlflow
 import pytest
 from mlflow.tracking import MlflowClient
 
 from pdm_mlops import config, data, features, models, tune
+
+# Optuna lives in the optional `[tune]` extra (ADR-006) — the package, CLI, and CI stay
+# light without it (tune.py imports it lazily). The tests that actually run a study are
+# marked with this and skipped when the extra isn't installed, rather than forcing optuna
+# into core CI. The grouped-CV geometry test below needs no optuna and always runs.
+needs_optuna = pytest.mark.skipif(
+    importlib.util.find_spec("optuna") is None,
+    reason="optuna not installed (optional `[tune]` extra — ADR-006)",
+)
 
 # Seed whose unit-grouped split is class-rich on both sides of every fold (the default 42
 # lands a single-class fixture slice — see test_train.py). The fixture is small, so a
@@ -50,6 +61,7 @@ def test_grouped_cv_never_shares_a_unit_across_folds(cleaned_dataset) -> None:
         assert train_units.isdisjoint(val_units)
 
 
+@needs_optuna
 def test_tune_model_returns_a_score_and_only_tunable_params(cleaned_dataset) -> None:
     result = tune.tune_model("lightgbm", cleaned_dataset, seed=FIXTURE_SEED, n_trials=5)
     assert result.name == "lightgbm"
@@ -59,6 +71,7 @@ def test_tune_model_returns_a_score_and_only_tunable_params(cleaned_dataset) -> 
     assert result.n_trials == 5
 
 
+@needs_optuna
 def test_tuned_params_actually_build_a_model(cleaned_dataset) -> None:
     # The contract that feeds train(): best_params must be valid overrides.
     result = tune.tune_model("logreg", cleaned_dataset, seed=FIXTURE_SEED, n_trials=5)
@@ -68,6 +81,7 @@ def test_tuned_params_actually_build_a_model(cleaned_dataset) -> None:
     assert proba.shape[0] == len(cleaned_dataset.X_test)
 
 
+@needs_optuna
 def test_tune_is_deterministic(cleaned_dataset) -> None:
     a = tune.tune_model("lightgbm", cleaned_dataset, seed=FIXTURE_SEED, n_trials=8)
     b = tune.tune_model("lightgbm", cleaned_dataset, seed=FIXTURE_SEED, n_trials=8)
@@ -75,6 +89,7 @@ def test_tune_is_deterministic(cleaned_dataset) -> None:
     assert a.best_value == b.best_value
 
 
+@needs_optuna
 def test_tune_tracks_one_run_per_model(fixture_readings, tmp_tracking) -> None:
     results = tune.tune(
         seed=FIXTURE_SEED, n_trials=4, tracking_uri=tmp_tracking, readings=fixture_readings
@@ -89,6 +104,7 @@ def test_tune_tracks_one_run_per_model(fixture_readings, tmp_tracking) -> None:
         assert f"cv_{config.PRIMARY_METRIC}" in run.data.metrics
 
 
+@needs_optuna
 def test_tune_searches_the_cleaned_frame(monkeypatch, fixture_readings, tmp_tracking) -> None:
     # tune() must prepare with suspect_feature=True (the cleaned F2.5 frame), so the
     # search optimises over the signal_suspect feature. Spy on prepare's kwarg.
