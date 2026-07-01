@@ -464,3 +464,74 @@ on this data) and closes the question. (A 12-trial / capped-space / short-epoch 
 *prove* no TCN anywhere beats 0.8194 — but with the ~0.82 ceiling and F2.6's null, the
 engineering verdict is firm: representation was the right lever; *deep*, and *tuning the deep*,
 were not.)
+
+## ADR-010 — Characterize the ceiling: measure that 0.82 is the *data's* information limit — decomposition + a fenced label-leaking upper-bound + an OOF stacking redundancy probe
+
+**Date:** 2026-07-01 · **Phase:** F2.8 · **Status:** **accepted — built and offline-tested; the reported full-data numbers land on a GPU/full-data run** (the CPU rungs and both verdicts are decidable on this hardware; the TCN's contribution enters through a seam)
+
+**Context.** Three sub-phases converged on the same claim: F2.6 (tuning is inert, +0.003),
+F2.7 (temporal helps a little, +0.007; deep does not earn its place; tuning the deep does not
+rescue it). Each *implies* the ≈0.82 ceiling is a property of the **data** (the generator's
+ADR-020 degradation ramp is gentle, and most of the 168 h label window is genuinely
+healthy-and-unpredictable), not a modelling shortfall — but every statement so far has been an
+**assertion**. F2.8 is the capstone that turns the string of nulls into a **measured** thesis,
+and then **stops the modelling investigation by design** (the repo's job is the MLOps spine,
+F3→F6).
+
+**Decision.** A new `ceiling.py` runs three instruments, all on the **exact F1 unit split /
+seed / test rows** (apples-to-apples with F2/F2.7) and all **label-honest** — labels are read
+here *only to grade or to bound*, never as an honest model input (the ADR-003 guard, the same
+`detect_score.py` discipline):
+
+1. **Score decomposition** (`decompose`). The honest per-row held-out AUC, sliced by
+   **time-to-failure horizon** (right-open buckets `[0,6) … [168,∞) h`) and by **failure
+   mode**. Each horizon/mode slice pits *that band's positives* against **all** held-out
+   healthy rows, reading "how separable are failures this close / of this kind from healthy".
+   This answers "is 0.82 flat, or high near failure and fading far out?" — the shape is the
+   point, and the aggregate is a mixture over a mostly-unpredictable window by construction.
+   Time-to-failure is derived **label-side** (`time_to_failure`: per unit, the failure event
+   is one stride past the last positive row) and used **only** to bucket, never as a feature.
+
+2. **A label-leaking upper-bound** (`upper_bound`) — a LightGBM that additionally sees
+   `failure_mode` (one-hot) and the derived `time_to_failure_h`, bounding the **irreducible**
+   error. It is a **diagnostic, clearly labelled, and structurally fenced**: it is built inside
+   its own function, returned in its own field (never merged into a reported metric), and the
+   honest frames are asserted leak-free by `_assert_honest_frame` (which adds a `LEAK_FEATURES`
+   guard *on top of* `features.assert_no_leakage`, so even the non-target `time_to_failure_h`
+   can never reach the honest path). A test asserts the fence fires. `gap = leaky − honest` is
+   the most room any better model on the same honest features could ever have.
+
+3. **A stacking redundancy probe** (`stacking_probe`) — an **out-of-fold, unit-grouped**
+   (`GroupKFold`) `LogisticRegression` meta-learner over the base rungs' predictions. Fit on
+   OOF train predictions (no base model's in-sample fit leaks into the meta score, no unit
+   crosses a fold), evaluated on the shared test rows against base models refit on all train
+   rows. **If the stack can't beat its best base member, the rungs are information-redundant →
+   the ceiling is the data, confirmed.** Reported either way. Stacking lives here **as a probe,
+   not a product** — a within-noise bump on the binary task would only muddy the clean F2.7
+   finding, so it is deliberately not promoted to a shipped model.
+
+**The TCN seam (compute honesty).** Everything above is CPU-only on the low-end desktop (the
+two base rungs are the cheap F2.7 LightGBM frames). The F2.7 **TCN** rung needs the GPU, so the
+probe accepts its predictions through `extra_oof={name: (oof_train, proba_test)}` — a notebook
+run folds the TCN's out-of-fold column in **without a rewrite**, alignment asserted. Because
+F2.7 already measured the TCN *below* rung (b), the probe's **verdict** (redundant vs. not) is
+already decidable from the two GBDT rungs; the TCN-included number is an optional refinement,
+not a blocker. This is the same "tested path = CPU/fixture; reported number = GPU/full data"
+discipline as ADR-007.
+
+**Why.** The honest close of a "is the model the bottleneck?" investigation is a *measurement*
+that the bottleneck is the data, not one more assertion. The decomposition shows **where**
+predictability lives (a shape, not a scalar); the fenced upper-bound **bounds** what any model
+could do on these features; the stacking probe **falsifiably tests** rung redundancy. Together
+they convert the F2.5→F2.7 nulls into a proven thesis — and knowing to stop here (rather than
+chase F2.9 RUL / F2.10 C-MAPSS, which are curated future work) is itself the senior signal.
+
+**Consequences.** New `ceiling.py` (`time_to_failure`, `build_base`, `decompose`,
+`upper_bound`, `stacking_probe`, `characterize`, `format_report`) + a `pdm ceiling` subcommand;
+`test_ceiling.py` (13, offline/deterministic: ttf is label-side & exactly on positives, the
+base frames are leak-free & on the exact F1 split, the decomposition covers horizon+modes, the
+upper-bound bounds & is fenced — the fence fires — determinism, the stacking seam folds/rejects
+extra OOF). No new dependency (LogisticRegression/GroupKFold are already in). **F2.8 closes the
+F2.* modelling arc; the next build is F3 (registry + gated promotion, ADR-008) — the MLOps
+spine the repo exists to finish.** The full-data decomposition/probe numbers are produced by a
+`pdm ceiling` run on the GPU/full dataset and recorded in STATE at that boundary.

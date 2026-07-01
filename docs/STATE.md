@@ -1,8 +1,40 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-06-27
+Updated: 2026-07-01
 
 ## Current focus
+
+**F2.8 (Characterize the ceiling — is the limit the data or the model?) — BUILT, offline-tested
+(full-data numbers pending a GPU `pdm ceiling` run). The capstone that closes the F2.* arc.**
+The honest close of the F2.5→F2.7 investigation: stop *asserting* "0.82 is the data's
+information limit" and **measure** it. New `ceiling.py`, three instruments, all on the **exact
+F1 unit split / seed / test rows** and all **label-honest** (labels read only to grade/bound,
+never as an honest feature — the ADR-003 / `detect_score` discipline):
+
+1. **Decomposition** (`decompose`) — the honest per-row held-out AUC sliced by **time-to-failure
+   horizon** (`[0,6)…[168,∞) h`) and by **failure mode**; each band's positives vs. all healthy
+   rows, so the *shape* of predictability is visible (expected high near failure, fading far
+   out — most of the 168 h window is healthy-and-unpredictable by construction). Time-to-failure
+   is derived label-side (`time_to_failure`: event = one stride past a unit's last positive) and
+   used only to bucket.
+2. **Label-leaking upper-bound** (`upper_bound`) — a LightGBM that also sees `failure_mode` +
+   the derived `time_to_failure_h`, bounding the **irreducible** error. A **fenced diagnostic**:
+   own field, never a reported metric; the honest frames are asserted leak-free by
+   `_assert_honest_frame` (a `LEAK_FEATURES` guard *on top of* `assert_no_leakage`, so even the
+   non-target `time_to_failure_h` can't reach the honest path); the fence is asserted by test.
+3. **Stacking redundancy probe** (`stacking_probe`) — an **OOF unit-grouped** (`GroupKFold`)
+   LogisticRegression meta-learner over the base rungs. Can't beat its best base member ⇒ rungs
+   are information-redundant ⇒ **the ceiling is the data, confirmed** (reported either way). A
+   probe, **not a product** — a within-noise bump would only muddy the clean F2.7 finding.
+
+**Compute / the TCN seam.** CPU-only on the low-end desktop (the two base rungs are the cheap
+F2.7 LightGBM frames). The F2.7 **TCN** needs the GPU, so the probe takes its predictions
+through `extra_oof={name: (oof_train, proba_test)}` — a notebook run folds the TCN's OOF in
+**without a rewrite** (alignment asserted). Since F2.7 measured the TCN *below* rung (b), the
+probe's **verdict** is already decidable from the two GBDT rungs; the TCN-included number is an
+optional refinement. `pdm ceiling` runs it live; new `ceiling.py` + **13 tests** (offline,
+deterministic). **ADR-010.** *(On the tiny fixture the numbers are artifacts — the reported
+full-data decomposition/probe land on a GPU `pdm ceiling` run, recorded here at that boundary.)*
 
 **F2.7 (Temporal modelling — does the trajectory help?) — DONE.** The honest follow-on to
 the F2.6 HPO-null finding: if tuning is exhausted because the ceiling is a *representation*
@@ -270,18 +302,46 @@ runnable skeleton — closed at an earlier boundary.)
   compare determinism). Torch-free rungs always run; TCN rungs skip without `[deep]`.
   **73 total green offline.**
 
+### F2.8 — Characterize the ceiling (2026-07-01)
+
+- **`ceiling.py`** — `characterize` runs three instruments on the shared honest base
+  (`build_base`: the F2.7 per-row + temporal-features LightGBM frames on the **exact F1**
+  unit split): `decompose` (held-out AUC by TTF-horizon bucket + by failure mode),
+  `upper_bound` (a **fenced** label-leaking LightGBM diagnostic — `failure_mode` one-hot +
+  derived `time_to_failure_h`), `stacking_probe` (OOF unit-grouped LogisticRegression over the
+  rungs → beats-best-base verdict). `time_to_failure` derives the label-side TTF (event = one
+  stride past a unit's last positive). `format_report` prints the capstone; `CeilingReport.
+  ceiling_is_data` = the thesis flag (¬stack-beats-best-base).
+- **The fence.** `_assert_honest_frame` = `features.assert_no_leakage` **plus** a
+  `LEAK_FEATURES` guard, so even the non-target `time_to_failure_h` can never reach the honest
+  path; the leaky frame is built only inside `upper_bound` and returned in its own field.
+- **The TCN seam.** `stacking_probe(extra_oof={name: (oof_train, proba_test)})` folds a
+  GPU-produced TCN OOF column in with no rewrite (alignment asserted). CPU-only otherwise.
+- **`pdm ceiling`** (`--seed`, `--window`) live. No new dependency.
+- **Tests** — `test_ceiling.py` (13: ttf finite exactly on positives + within horizon, base
+  frames leak-free + exact-F1-split + unit-disjoint, decomposition covers horizon+modes with
+  positives summing to held-out positives, upper-bound bounds & is fenced — **the fence fires**
+  on `time_to_failure_h` and on target/label columns — determinism, the stacking seam folds in
+  / rejects misaligned extra OOF). Offline, deterministic. **86 total green offline** (73 +
+  13). **ADR-010.**
+- **Pending:** the reported full-data numbers land on a GPU `pdm ceiling` run (fixture numbers
+  are artifacts).
+
 ## Next step (concrete)
 
-**F2.8 — Characterize the ceiling (NEXT, ADR-010). The capstone that closes the F2.* arc.**
-Measure, don't assert, that 0.82 is the data's information limit: per-horizon + per-failure-mode
-AUC decomposition; a label-leaking upper-bound (a **diagnostic**, fenced off from any reported
-metric, asserted by test); a **stacking redundancy probe** (OOF meta-learner over the F2.7 rungs
-— if it can't beat its best member, the rungs are redundant → ceiling confirmed). *Stacking lives
-here as a probe, not a product — a within-noise bump on the binary task would only muddy the clean
-F2.7 finding.* This turns the F2.5→2.7 string of nulls into a *proven thesis* and **the modelling
-investigation stops here, by design.**
+**F2.8 is built + offline-tested — the modelling investigation stops here by design.** One thing
+outstanding on it: a **GPU `pdm ceiling` run on the full dataset** to record the reported
+decomposition / upper-bound / probe numbers (the fixture numbers are artifacts). Optionally fold
+the F2.7 TCN's OOF into the probe via the `extra_oof` seam on that same run. Not a blocker for F3.
 
-**Then jump to the MLOps spine — F3 → F4 → F5 → F6 (the repo's actual job).** A complete
+**F3 — Registry + promotion is the concrete NEXT build (ADR-008). The MLOps spine the repo exists
+to close.** Governed model lifecycle on the same MLflow SQLite registry F2 already writes to.
+`registry.py`: register the winner, **stage→production promotion gated by the eval metric**, and
+rollback. DoD: a *worse* candidate does **not** promote (asserted); rollback restores the prior
+production version. Build it on the (tabular or temporal) winner F2.6/F2.7 produces; tests stay
+offline (tmp SQLite, the fixture).
+
+**Then F4 → F5 → F6 (the rest of the spine).** A complete
 production spine (train → registry → serve → drift → retrain → cloud) is the rare portfolio
 signal; finishing it beats polishing the modelling branch.
 
@@ -294,13 +354,6 @@ deep-learning/benchmarking axis better owned by a dedicated DL showcase (or by m
 signal** — knowing the next step and choosing the spine. Build only if a dedicated DL showcase is
 decided.
 
-**F3 — Registry + promotion.** Governed model lifecycle on the same MLflow registry F2
-already writes to. `registry.py`: register the winner, **stage→production promotion gated
-by the eval metric**, and rollback. DoD: a *worse* candidate does **not** promote
-(asserted); rollback restores the prior production version. ADR-008 (promotion gate).
-Build it on the SQLite-backed registry (ADR-004) and the (tabular or temporal) winner
-F2.6/F2.7 can produce. Tests stay offline (tmp SQLite, the fixture).
-
 **Honesty note (carries forward) — now measured, not asserted.** The real lift came from
 the **data**, not the modelling: ADR-020's pre-failure degradation ramp + the
 `vibration_mms` feature took the score ≈0.55→0.82. **F2.6 HPO, measured on the refreshed
@@ -312,9 +365,11 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — **F2.7 (temporal modelling) is built and measured at this boundary**
-(incl. the TCN HPO follow-up); **F2.8 (characterize the ceiling, ADR-010) builds next**, then
-F2.9 / F2.10, then the F3 MLOps gate.
+One phase per session — **F2.8 (characterize the ceiling, ADR-010) is built and offline-tested at
+this boundary** (86 tests green on the i3), closing the F2.* modelling arc; F2.9 / F2.10 stay
+deferred by design; **F3 (registry + gated promotion, ADR-008) is the next build** — the MLOps
+gate the repo exists to close. Outstanding on F2.8: a GPU `pdm ceiling` full-data run for the
+reported numbers (not a blocker for F3).
 
 ## Notes
 
