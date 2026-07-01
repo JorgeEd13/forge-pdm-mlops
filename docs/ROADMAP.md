@@ -15,7 +15,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F2.8** | ☑ built, offline-tested *(full-data numbers pending a GPU `pdm ceiling` run)* | **Characterize the ceiling — is the limit the data or the model?** Stops *asserting* "0.82 is the information limit" and **measures** it: `ceiling.py` runs a per-horizon + per-failure-mode AUC decomposition, a **fenced** label-leaking upper-bound (a diagnostic, never a reported metric — the fence is asserted by test), and an **OOF unit-grouped stacking redundancy probe** over the F2.7 rungs (can't beat its best base ⇒ rungs redundant ⇒ ceiling is the data). CPU-only on the desktop; the GPU TCN folds into the probe through an `extra_oof` seam. **The capstone that closes the F2.* modelling arc** (ADR-010) |
 | **F2.9** | ↗ future work *(deferred by design)* | **Task reframing — does the binary target hide the ramp?** Reframe to **RUL / graded severity** (the PdM task where the trajectory carries separable signal) and re-run the ladder + a stack. Identified and scoped, **intentionally not built**: it's a deep-learning/modelling axis better owned by a dedicated DL showcase than buried in this MLOps repo — the spine (F3+) is the priority (ADR-011) |
 | **F2.10** | ↗ future work *(deferred by design)* | **Cross-dataset validation — does the conclusion generalize?** Run the same ladder on **NASA C-MAPSS** (the canonical public RUL benchmark where temporal models win). Scoped, **intentionally not built** for the same reason as F2.9 — a generalization claim worth making in its own focused artifact, not as a sub-phase of the production showcase (ADR-012) |
-| **F3** | ☐ | Model registry: register + stage→production promotion gated by an eval metric + rollback |
+| **F3** | ✅ done | Model registry governance: metric-gated **promotion** to a `production` **alias** (MLflow 3, not deprecated stages) + **rollback** to the prior version. **A worse candidate does not promote** (asserted); rollback restores the previous production version (ADR-008) |
 | **F4** | ☐ | Serving — FastAPI (`/predict`, `/health`, `/model-info`) + Dockerfile + compose (serving + MLflow UI) |
 | **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
 | **F6** | ☐ | *(stretch)* hosted free-tier deploy (Fly.io / Render / HF Spaces) → a live `/health` link |
@@ -235,13 +235,18 @@ below in full so the judgment (and the scoping) is on the record.
   (confirming the synthetic ceiling, not a pipeline limit); clean-room boundary intact (public
   data only, never mixed into the synthetic narrative). **ADR-012.**
 
-## F3 — Registry + promotion
+## F3 — Registry + promotion ✅
 
 - **Objective.** Governed model lifecycle.
-- **How.** `registry.py`: register the winner, **stage→production promotion gated by
-  the eval metric**, rollback. ADR-008 (promotion gate).
-- **DoD.** A worse candidate does **not** promote (asserted); rollback restores the
-  prior production version.
+- **How.** `registry.py`: **metric-gated** promotion of a registered version to a
+  `production` **alias** (MLflow 3 deprecated the classic stages — ADR-008) + **rollback**
+  to the version it superseded (recorded as a tag for determinism). A rejection is a
+  structured governed *outcome*, not an exception; malformed requests raise. `pdm promote`
+  (`--version`/`--min-delta`/`--force`) + `pdm rollback`.
+- **DoD — met.** A worse candidate does **not** promote (asserted); rollback restores the
+  prior production version (asserted). `test_registry.py` (14, offline, tmp SQLite) also
+  covers first-promotion, ties, `min_delta` tolerance, `--force`, and loud errors on
+  malformed input. **ADR-008.**
 
 ## F4 — Serving
 
