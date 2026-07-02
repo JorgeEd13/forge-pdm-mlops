@@ -715,6 +715,16 @@ different STATE lines.
 
 ## Notes
 
+- **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
+  parallel planning session on `receivables-agent` (its `PLAN.md` Phase 7) established the
+  division of labor: forge-pdm already ships the heavier IaC rungs — `docker-compose.yml`
+  (serve + MLflow UI, shared volume), `Dockerfile` + self-contained `Dockerfile.hf`, a **live**
+  HF Space, and F7 **Cloud Run + Cloud SQL + Secret Manager** *as code* (`scripts/deploy_cloudrun.sh`,
+  code shipped; live URL pending the notebook). So receivables deliberately keeps its IaC scope
+  small (just upgrading its single-service compose to app+Ollama) rather than duplicating managed
+  cloud here. **No action needed in this repo from that session** — this note is the pointer so a
+  future session sees why the IaC weight lives here. The one open IaC-flavored item here is still
+  F7's live URL + green record on the notebook (see "Next step").
 - No GPU, no paid services, no training tokens — local NumPy/pandas + cheap models;
   MLflow on a local file backend; CI is free and offline.
 - Determinism is a hard invariant: one seed → data → split → train, same metrics.
