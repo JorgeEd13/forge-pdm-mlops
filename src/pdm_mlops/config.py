@@ -83,3 +83,11 @@ PRIMARY_METRIC: str = "roc_auc"
 #: The generator season used as the drift stimulus in the marquee loop. Baseline
 #: training data uses no season; the monitor compares against this shifted one.
 DRIFT_SEASON: str = "heatwave"
+
+#: Retrain-trigger policy (ADR-013): drift is declared when at least this **share of
+#: the model's input features** drift (per Evidently's per-column tests). A share, not
+#: "any one feature", so a single column tripping on noise does not fire a retrain — the
+#: loop should react to a distribution shift, which the ``season`` stimulus produces
+#: across several correlated signals at once. Half the signals is a deliberate,
+#: documented middle ground (a real heatwave shift moves the thermal cluster together).
+DRIFT_SHARE_THRESHOLD: float = 0.5

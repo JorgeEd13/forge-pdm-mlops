@@ -6,6 +6,8 @@ Later phases add focused tests for data/features/train/registry/serve/flow.
 
 from __future__ import annotations
 
+import pytest
+
 import pdm_mlops
 from pdm_mlops import config
 from pdm_mlops.cli import main
@@ -22,13 +24,22 @@ def test_cli_no_args_prints_help_and_succeeds(capsys) -> None:
     assert "pdm" in out
 
 
-def test_unimplemented_subcommands_are_honestly_stubbed(capsys) -> None:
-    # Subcommands whose phase hasn't landed report "not yet" rather than faking
-    # capability (`train` went live in F2 and is covered by test_train.py).
-    for cmd in ("serve", "flow", "monitor"):
-        assert main([cmd]) == 2
-        err = capsys.readouterr().err
-        assert "Not implemented yet" in err
+def test_every_subcommand_is_wired(capsys) -> None:
+    # By F5 the whole roadmap surface is live — no subcommand is a "not yet" stub
+    # anymore (each phase's behaviour is covered by its own test module). This guards
+    # the invariant that the CLI never silently regresses a live command back to a stub:
+    # `--help` for every declared subcommand parses and exits 0, and none of them prints
+    # the honest-stub sentinel.
+    from pdm_mlops.cli import build_parser
+
+    sub = next(
+        a for a in build_parser()._actions if a.dest == "command"
+    )  # the subparsers action
+    for cmd in sub.choices:
+        with pytest.raises(SystemExit) as exc:  # argparse exits 0 after printing help
+            main([cmd, "--help"])
+        assert exc.value.code == 0
+        assert "Not implemented yet" not in capsys.readouterr().err
 
 
 def test_committed_sample_exists() -> None:

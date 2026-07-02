@@ -676,3 +676,76 @@ extra OOF). No new dependency (LogisticRegression/GroupKFold are already in). **
 F2.* modelling arc; the next build is F3 (registry + gated promotion, ADR-008) — the MLOps
 spine the repo exists to finish.** The full-data decomposition/probe numbers are produced by a
 `pdm ceiling` run on the GPU/full dataset and recorded in STATE at that boundary.
+
+---
+
+## ADR-013 — The drift → auto-retrain loop: a share-threshold drift trigger, and a Prefect flow that routes every promotion through the *same* F3 gate
+
+**Date:** 2026-07-02 · **Phase:** F5 · **Status:** accepted
+
+> **ADR number.** ADR-011 and ADR-012 are reserved for the deliberately-deferred F2.9 (RUL)
+> and F2.10 (C-MAPSS) modelling sub-phases (scoped in ROADMAP, intentionally not built), so
+> F5 takes the next free number, **ADR-013** — the roadmap already earmarked it for this phase.
+
+**Context.** F2→F4 built the spine: train + track, register + gated-promote, serve the alias.
+F5 is the capability the repo exists to demonstrate — the **closed loop** that ties them
+together: incoming data drifts, a fresh model is trained on it, and it reaches production **only
+if it earns it**, with no human in the path. Two decisions decide whether the loop is honest: how
+drift becomes a *trigger*, and how a retrained model is allowed to *ship*.
+
+**Decision.**
+
+1. **Drift trigger = a share-of-features threshold, not "any feature drifted".** `monitor.py`
+   runs Evidently's `DataDriftPreset` over exactly the model's input signals
+   (`features.FEATURE_COLUMNS`, via `select_features` — the monitored surface is the trained
+   surface, and the leakage guard rides along for free), then applies **our own** policy to the
+   per-column drift flags: drift is declared when the **share** of drifted features reaches
+   `config.DRIFT_SHARE_THRESHOLD` (0.5). A *share*, because a single column tripping on noise
+   must not fire a retrain — the loop should react to a **distribution shift**, which the
+   `season` stimulus produces across several correlated signals at once (a real heatwave moves
+   the thermal cluster together). Evidently reports its own dataset-drift boolean at its default;
+   we deliberately **ignore it** and decide under our single, documented threshold, so the retrain
+   policy lives in one auditable place (`DriftReport.threshold` records it). The distilled
+   `DriftReport` is small and JSON-serialisable; the raw Evidently object is returned separately
+   for the HTML artifact.
+
+2. **The retrain promotion is F3's gate, unchanged — so "auto-retrain" can never mean
+   "auto-degrade".** `flows.py`'s promote task calls `registry.promote(...)` **verbatim**: a
+   retrained candidate that does not clear the metric gate against the incumbent is **held**, and
+   that is a normal, reported `FlowResult` outcome (`retrained=True, promoted=False`), not an
+   error. This is the load-bearing honesty of the whole loop — the closed loop cannot silently
+   ship a worse model, because the exact same governance that guards a manual `pdm promote` guards
+   the automated one. A dedicated test proves it (`min_delta=-1.0` ⇒ impossible bar ⇒ the
+   candidate is held and production stays the incumbent).
+
+3. **Prefect authors/executes the flow; GitHub Actions only schedules it (they layer, ADR-002).**
+   The loop is a Prefect `@flow` of retried `@task`s — `detect_drift → [if drift] → retrain →
+   promote-or-hold` — and runs **in-process** on Prefect's default local runner, so the tests
+   exercise the real task graph on the fixture with **no server** and the scheduled
+   `retrain.yml` (already wired at F0) just invokes `pdm flow`. The Prefect decorators are
+   imported **lazily inside** `run_drift_retrain` (not at module import), so importing the
+   package — and core CI — never needs the `[ops]` extra; only actually running the loop does.
+
+4. **Evidently is pinned `<0.7`.** 0.7.0 rewrote the public API (the `Report` + `metric_preset`
+   + `as_dict()` surface `monitor.py` targets was replaced). Capping the `[ops]` extra keeps the
+   code and the installed library in agreement across desktop and notebook — the same
+   reproducibility discipline as the pinned generator (ADR-001).
+
+**Why.** A drift→retrain loop is only a portfolio signal if it is *demonstrably safe*: the
+reviewer's question is "what stops this from automatically promoting a worse model?" and the
+answer is a tested `FlowResult` where the F3 gate held. Deciding drift on a share threshold (not
+one noisy column, not Evidently's opaque default) makes the trigger legible; routing every
+promotion through the unchanged gate makes the automation trustworthy; keeping it in-process and
+`[ops]`-lazy keeps it fully offline-testable and core-CI-light.
+
+**Consequences.** New `monitor.py` (`DriftReport`, `drift_report`, `detect_drift`,
+`config.DRIFT_SHARE_THRESHOLD`) and `flows.py` (`FlowResult`, `run_drift_retrain` composing the
+F5 monitor + F2 train + F3 promote); `pdm monitor` / `pdm flow` go live (the last two roadmap
+stubs — `test_skeleton` now asserts the whole CLI surface is wired, no stub remains); the `[ops]`
+extra is capped `evidently<0.7`. `test_monitor.py` (6) + `test_flows.py` (5), offline on the
+fixture with a **synthetic** multi-signal shift standing in for the generator's `season`
+stimulus, MLflow → tmp SQLite, Prefect in-process — both modules `importorskip` the `[ops]` libs
+so core CI (which installs only `[dev]`) skips them cleanly, exactly like `[serve]`/`[tune]`/
+`[deep]`. **F5 closes the marquee gate — a complete production spine now runs end to end:
+train → registry → serve → drift → retrain → cloud-scheduled.** F6 (a hosted free-tier `/health`
+link) is the only stretch left.

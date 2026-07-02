@@ -7,7 +7,7 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F4%20%E2%80%94%20serving%20shipped-yellow" alt="Status: F4 — serving shipped">
+  <img src="https://img.shields.io/badge/status-F5%20%E2%80%94%20production%20spine%20complete-success" alt="Status: F5 — production spine complete">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
@@ -46,17 +46,19 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F4 (the production spine is serving).** F0 (skeleton), F1 (real data layer +
-> leakage-safe features), **F2 (the training core — a two-model comparison, winner
+> ⚠️ **Honest status — F5 (the production spine is complete, end to end).** F0 (skeleton), F1 (real
+> data layer + leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
 > + model diagnostics + training watchers)**, **F2.7 (a temporal-modelling ladder — does
 > the trajectory help?)** and **F2.8 (characterize the ceiling — is the limit the model or the
-> data?)** are in place, closing the F2.\* modelling arc by design. **F3 (registry governance —
-> metric-gated promotion + rollback)** and **F4 (FastAPI serving the `production`-aliased model,
-> Dockerfile + compose)** are the first two builds on the production spine. The drift → auto-retrain
-> loop (F5, the marquee) is next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
-> Nothing here implies a live production deployment; the drift→retrain loop, once shipped, is a
+> data?)** are in place, closing the F2.\* modelling arc by design. On the production spine:
+> **F3 (registry governance — metric-gated promotion + rollback)**, **F4 (FastAPI serving the
+> `production`-aliased model, Dockerfile + compose)**, and **F5 (the marquee — the drift →
+> auto-retrain loop that routes every promotion through the F3 gate)** are all shipped — so the
+> spine now runs **train → registry → serve → drift → retrain → cloud-scheduled**. The only stretch
+> left is a hosted free-tier `/health` link (F6) — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> Nothing here implies a live production deployment; the drift→retrain loop is a
 > **demonstrated closed loop on synthetic data**.
 >
 > 🔎 **The score is real (≈ 0.82), and that took fixing the *data*, not the model.**
@@ -297,6 +299,37 @@ rollback move — so a governance change is reflected **with no redeploy and no 
 pdm serve                         # FastAPI over the production-aliased model (127.0.0.1:8000)
 docker compose up --build         # serving (:8000) + the MLflow UI (:5000), one registry volume
 curl -s localhost:8000/health     # {"status":"ok","model_loaded":true,"model_version":"3"}
+```
+
+## The drift → auto-retrain loop — the marquee (F5)
+
+Train, register, and serve are the spine; **this is what makes it a *loop*.** When the
+incoming data drifts far enough from what the production model trained on, the pipeline
+retrains and — **only if the new model earns it** — promotes itself, with no human in the
+path ([`monitor.py`](src/pdm_mlops/monitor.py), [`flows.py`](src/pdm_mlops/flows.py)).
+
+- **Drift is a decision, not a library default.** [`monitor.py`](src/pdm_mlops/monitor.py)
+  runs Evidently's `DataDriftPreset` over exactly the model's input signals, then applies
+  **its own** policy to the per-feature flags: drift is declared when the **share** of
+  drifted features crosses `DRIFT_SHARE_THRESHOLD`. A *share*, not "any one column" — so a
+  single noisy feature doesn't trigger a retrain, but a real distribution shift (the `season`
+  stimulus moves the thermal cluster together) does. The threshold is recorded on the report,
+  so the decision is auditable.
+- **The loop cannot auto-degrade.** [`flows.py`](src/pdm_mlops/flows.py) is a **Prefect** flow
+  — `detect drift → [if drift] retrain → promote-or-hold` — and its promote step is the F3
+  gate **unchanged**. A retrained model that doesn't beat the incumbent is **held, not
+  shipped** — a governed outcome, not an error. A test sets an *impossible* gate bar
+  (`min_delta=-1.0`) and asserts the candidate is held and production stays put: "auto-retrain"
+  can never mean "auto-degrade" ([ADR-013](docs/DECISIONS.md)).
+- **In-process, offline-testable.** The flow runs on Prefect's local runner, so the real task
+  graph is exercised on the fixture with no server. Evidently/Prefect are the optional `[ops]`
+  extra, imported lazily — the package and core CI never need them. The drift library is
+  **version-pinned** (`evidently<0.7`) for the same cross-machine reproducibility as the
+  pinned generator.
+
+```bash
+pdm monitor --season heatwave     # Evidently drift report + the share-threshold decision
+pdm flow --season heatwave        # the full detect → retrain → promote-or-hold loop, in-process
 ```
 
 ## The stack (and why two orchestration layers)

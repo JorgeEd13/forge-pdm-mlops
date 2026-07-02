@@ -17,7 +17,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F2.10** | ↗ future work *(deferred by design)* | **Cross-dataset validation — does the conclusion generalize?** Run the same ladder on **NASA C-MAPSS** (the canonical public RUL benchmark where temporal models win). Scoped, **intentionally not built** for the same reason as F2.9 — a generalization claim worth making in its own focused artifact, not as a sub-phase of the production showcase (ADR-012) |
 | **F3** | ✅ done | Model registry governance: metric-gated **promotion** to a `production` **alias** (MLflow 3, not deprecated stages) + **rollback** to the prior version. **A worse candidate does not promote** (asserted); rollback restores the previous production version (ADR-008) |
 | **F4** | ✅ done | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production`-**aliased** model + Dockerfile + compose (serving + MLflow UI). A promotion/rollback (F3) changes what `/predict` answers with **no redeploy**; probabilities via the native flavor; `TestClient` round-trips a prediction (ADR-009) |
-| **F5** | ☐ | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently report + Prefect flow + scheduled GH Actions trigger |
+| **F5** | ✅ done | **Drift monitoring + the auto-retrain loop (marquee)** — `monitor.py` (Evidently `DataDriftPreset` over the feature signals + a **share-threshold** drift decision) + `flows.py` (a Prefect `detect_drift → [if drift] → retrain → promote-or-hold` flow that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade) + the scheduled GH Actions trigger. Runs **in-process** on the fixture; `pdm monitor` / `pdm flow` live (ADR-013) |
 | **F6** | ☐ | *(stretch)* hosted free-tier deploy (Fly.io / Render / HF Spaces) → a live `/health` link |
 
 ---
@@ -256,17 +256,24 @@ below in full so the judgment (and the scoping) is on the record.
   version). `Dockerfile` + `docker-compose.yml` (serving + MLflow UI) — one command.
 - **DoD.** `TestClient` round-trips a prediction; compose brings up both services.
 
-## F5 — Drift monitoring + the auto-retrain loop (marquee)
+## F5 — Drift monitoring + the auto-retrain loop (marquee) ✅
 
 - **Objective.** A demonstrated closed loop: drift detected → retrain → recovered
-  model promoted.
-- **How.** `monitor.py` (Evidently report baseline vs. a `--season heatwave` shift +
-  a drift decision). `flows.py` Prefect flow `detect_drift → [if drift] →
-  retrain(compare) → evaluate → promote-or-hold`, tasks with retries.
-  `.github/workflows/retrain.yml` runs it on a schedule on cloud runners.
-  ADR-013 (drift metric + retrain trigger policy). DEMO.md + a GIF.
-- **DoD.** Flow runs **in-process** in tests on the fixture; the drift branch fires
-  and a model is promoted; the scheduled workflow is wired.
+  model promoted — that **cannot silently ship a worse model**.
+- **How.** `monitor.py` (Evidently `DataDriftPreset` over the feature signals baseline
+  vs. a `--season heatwave` shift + a **share-threshold** drift decision). `flows.py`
+  Prefect flow `detect_drift → [if drift] → retrain → evaluate → promote-or-hold`,
+  retried tasks. `.github/workflows/retrain.yml` runs it on a schedule on cloud runners.
+  ADR-013 (drift metric + retrain trigger policy).
+- **DoD — met.** The flow runs **in-process** in tests on the fixture; the drift branch
+  fires and a model is promoted; a held candidate (`min_delta=-1.0`) proves the F3 gate
+  still guards the automated path; the scheduled workflow is wired.
+- **Shipped.** `monitor.py` (Evidently report + `DriftReport` + the `DRIFT_SHARE_THRESHOLD`
+  policy), `flows.py` (the Prefect flow composing F5 monitor + F2 train + **F3's unchanged
+  promote gate** → a structured `FlowResult`), `pdm monitor` + `pdm flow` (the last two
+  roadmap stubs, now live), the `[ops]` extra capped `evidently<0.7`, ADR-013. 11 new
+  offline tests (`test_monitor.py` 6 + `test_flows.py` 5), both `importorskip`-ing the
+  `[ops]` libs so core CI stays light. **The production spine now runs end to end.**
 
 ## F6 — (stretch) hosted free-tier deploy
 

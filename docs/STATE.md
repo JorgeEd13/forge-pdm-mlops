@@ -1,8 +1,50 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-01
+Updated: 2026-07-02
 
 ## Current focus
+
+**F5 (Drift monitoring + the auto-retrain loop — THE MARQUEE) — DONE (2026-07-02, on the
+desktop). The production spine now runs end to end (ADR-013).** The closed loop the repo
+exists to demonstrate: a distribution shift is detected, a fresh model is trained on the
+shifted data, and it reaches production **only if it clears the same F3 gate** that guards
+every promotion — so "auto-retrain" can never mean "auto-degrade". Two new modules:
+
+- **`monitor.py`** — `drift_report(reference, current)` runs Evidently's `DataDriftPreset`
+  over exactly the model's input signals (`features.FEATURE_COLUMNS`, via `select_features`
+  — the monitored surface is the trained surface, leakage guard included) and distils it to a
+  small, JSON-serialisable **`DriftReport`**. The decision is **ours**, not Evidently's
+  default: drift is declared when the **share** of drifted features reaches
+  `config.DRIFT_SHARE_THRESHOLD` (0.5) — a *share*, so one column tripping on noise doesn't
+  fire a retrain; the loop reacts to a *distribution* shift (the `season` stimulus moves the
+  thermal cluster together). `detect_drift(season=…)` is the high-level entry: baseline (no
+  season) vs. the `season`-shifted window, both from the same canonical config.
+- **`flows.py`** — `run_drift_retrain(...)` is a Prefect `@flow` of retried `@task`s:
+  `detect_drift → [if drift] → retrain (F2 `train`) → promote-or-hold (F3 `promote`,
+  **unchanged**)` → a structured **`FlowResult`**. The promote step is `registry.promote`
+  verbatim, so a retrained candidate that doesn't beat the incumbent is **held**
+  (`retrained=True, promoted=False`) — a normal governed outcome, not an error. Runs
+  **in-process** on Prefect's local runner (no server); Prefect is imported **lazily inside**
+  the call so importing the package / core CI never needs `[ops]`.
+- **`pdm monitor` / `pdm flow`** go live — the **last two roadmap stubs**; `test_skeleton`
+  now asserts the whole CLI surface is wired (no stub remains). `[ops]` extra capped
+  **`evidently<0.7`** (0.7 rewrote the API `monitor.py` targets — same pin discipline as the
+  generator, ADR-001).
+- **`test_monitor.py` (6) + `test_flows.py` (5):** a synthetic multi-signal shift on the
+  fixture stands in for the generator's `season` (offline); a real shift → drift, an identical
+  frame → stable; the flow's drift branch fires and promotes; **a held candidate
+  (`min_delta=-1.0`) proves the F3 gate still guards the automated path**; no-drift holds
+  production. Both modules `importorskip` the `[ops]` libs, so core CI (only `[dev]`) skips
+  them cleanly — exactly like `[serve]`/`[tune]`/`[deep]`. **121 tests total** (110 + 11).
+  **ADR-013.**
+
+  > **Verification note (2026-07-02):** built + wired on the i3 desktop, where `[ops]`
+  > (Evidently + Prefect) is **not installed**, so `test_monitor`/`test_flows` **skip** here
+  > and the rest of the offline suite stays green (the F5 modules import light — the lazy
+  > `[ops]` imports are proven by a clean `from pdm_mlops import monitor, flows` without the
+  > extra). **The 11 new F5 tests run for real on the notebook / CI where `[ops]` is
+  > installed;** record the green there. (The notebook is separately finishing the pending F4
+  > clean-110 run and the F2.8 GPU `pdm ceiling` numbers — unrelated to F5.)
 
 **F4 (Serving — FastAPI over the promoted model) — DONE (2026-07-01). The second spine
 build: the governed version F3 promotes is now served over HTTP (ADR-009).** New
@@ -432,21 +474,50 @@ runnable skeleton — closed at an earlier boundary.)
   predict/model-info 503 without a model, rollback picked up by a fresh store load, empty
   batch 422). Offline, tmp SQLite. **110 total green offline** (100 + 10). **ADR-009.**
 
+### F5 — Drift monitoring + the auto-retrain loop (2026-07-02)
+
+- **`monitor.py`** — `drift_report` runs Evidently `DataDriftPreset` over `FEATURE_COLUMNS`
+  (via `select_features`) → a distilled `DriftReport` (per-feature drift + share + our
+  decision). `_distil` applies **our** `config.DRIFT_SHARE_THRESHOLD` (0.5) to the per-column
+  flags, not Evidently's default dataset-drift boolean, so the retrain policy is in one
+  auditable place (`DriftReport.threshold` records it). `detect_drift(season=…)` = baseline vs.
+  `season`-shifted; frames injectable for offline tests. Evidently imported lazily (`[ops]`).
+- **`flows.py`** — `run_drift_retrain` = a Prefect flow `detect_drift → [if drift] → retrain →
+  promote-or-hold`, retried tasks, in-process. The promote task is **`registry.promote`
+  unchanged** (the F3 gate) → a `FlowResult` (`drift`, `retrained`, `promotion`, `promoted`).
+  Prefect imported lazily inside the call so the package/core-CI never needs `[ops]`.
+- **`config.DRIFT_SHARE_THRESHOLD = 0.5`** added next to `DRIFT_SEASON`.
+- **`cli.py`** — `pdm monitor --season` (drift report + decision, exit 0/1) and `pdm flow
+  --season/--seed/--min-delta` (the loop, exit 0 iff a model was promoted) go live; the two
+  `_not_yet("F5")` stubs are gone. `test_skeleton` repurposed: **every** subcommand is wired
+  (no stub left) — `--help` parses + exits 0 for each, none prints the honest-stub sentinel.
+- **`pyproject.toml`** — `[ops]` capped `evidently>=0.4,<0.7` (ADR-013 reproducibility pin).
+- **Tests** — `test_monitor.py` (6: shifted→drift, identical→stable, report covers exactly
+  the feature columns, decision uses the configured threshold, human-readable summary),
+  `test_flows.py` (5: drift triggers retrain + promotes, no-drift holds, **worse candidate
+  held via `min_delta=-1.0`** — the gate guards the automated path, summary reflects the
+  outcome). Offline, tmp SQLite, Prefect in-process, synthetic shift on the fixture. Both
+  `importorskip` the `[ops]` libs. **121 total** (110 + 11); the 11 run where `[ops]` is
+  installed (notebook/CI). **ADR-013.**
+
 ## Next step (concrete)
 
-**F4 (serving the promoted model, FastAPI + Docker, ADR-009) is DONE — the second spine
-build shipped.** The governed version F3 promotes is now served over HTTP, following the
-alias with no redeploy.
+**F5 (drift monitoring + the auto-retrain loop, ADR-013) is DONE — the marquee shipped
+(2026-07-02, desktop).** The complete production spine now runs end to end: **train → registry
+→ serve → drift → retrain → cloud-scheduled**. The loop cannot auto-degrade because its promote
+step is F3's `promote` unchanged (a worse candidate is held, proven by the `min_delta=-1.0`
+test). `pdm monitor` / `pdm flow` are live — the last two roadmap stubs are gone.
 
-**F5 — the marquee is the concrete NEXT build: drift monitoring + the auto-retrain loop.**
-`monitor.py` (Evidently: baseline vs. a `--season heatwave` shift + a drift decision) +
-`flows.py` (Prefect `detect_drift → [if drift] → retrain(compare) → evaluate →
-promote-or-hold`, ending in exactly F3's gated `promote`) + `.github/workflows/retrain.yml`
-on a schedule. DoD: the flow runs **in-process** in tests on the fixture, the drift branch
-fires and a model is promoted, the scheduled workflow is wired. ADR-013 (drift metric +
-retrain trigger policy — ADR-009 went to F4 serving; ADR-011/012 are the deferred F2.9/F2.10).
-Then F6 is the stretch hosted deploy. A complete production spine
-(train → registry → serve → drift → retrain → cloud) is the rare portfolio signal.
+**F6 (stretch) — the only phase left: a hosted free-tier `/health` link.** Deploy the F4
+serving image to Fly.io / Render / HF Spaces → a reachable `/health` in the README. Build only
+if low-friction (Jorge's call); the spine is already complete without it.
+
+**Merge-at-home note (2026-07-02):** F5 was built on the desktop where `[ops]` isn't installed,
+so `test_monitor`/`test_flows` (11 tests) **skip here** and must be run on the notebook/CI to
+record their green. Two *separate* notebook-side items are still pending from before and are
+**independent of F5**: the F4 clean-110 `pytest` run and the F2.8 GPU `pdm ceiling` numbers.
+When pulling the desktop branch at home, fold those results in — they touch different STATE
+lines (F4/F2.8) than F5, so the merge is additive.
 
 **Still outstanding on F2.8 (not a blocker):** a **GPU `pdm ceiling` run on the full dataset** to
 record the reported decomposition / upper-bound / probe numbers (the fixture numbers are
@@ -472,11 +543,13 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — **F3 (registry + gated promotion + rollback, ADR-008) shipped at this
-boundary** (100 tests green on the i3): the first build on the MLOps spine, closing the
-registry-governance gate. The F2.* modelling arc stays closed (F2.9/F2.10 deferred by design).
-**F4 (serving the promoted model, FastAPI + Docker) is the next build.** Outstanding on F2.8: a
-GPU `pdm ceiling` full-data run for the reported numbers (not a blocker for F4).
+One phase per session — **F5 (drift monitoring + the auto-retrain loop, ADR-013) shipped at
+this boundary**: the marquee, closing the drift→retrain gate and completing the production
+spine (train → registry → serve → drift → retrain → cloud). Offline core green on the i3 (the
+11 `[ops]` F5 tests skip here, run on the notebook/CI). The F2.* modelling arc stays closed
+(F2.9/F2.10 deferred by design). **F6 (a hosted free-tier `/health` link) is the only phase
+left — a low-friction stretch.** Still pending on the notebook (independent of F5): the F4
+clean-110 run and the F2.8 GPU `pdm ceiling` numbers.
 
 ## Notes
 

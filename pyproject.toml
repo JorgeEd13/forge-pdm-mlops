@@ -43,7 +43,11 @@ dev = ["pytest>=7"]
 # Serving (F4): FastAPI app exposing the promoted model.
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
 # Drift monitoring + orchestration (F5): Evidently drift report, Prefect flow.
-ops = ["evidently>=0.4", "prefect>=2.16"]
+# Evidently is CAPPED below 0.7: 0.7.0 rewrote the public API (the `Report` +
+# `metric_preset` + `as_dict()` surface `monitor.py` targets was replaced), so the pin
+# keeps the code and the installed library in agreement across machines — the same
+# reproducibility discipline as the generator pin (ADR-001/ADR-013).
+ops = ["evidently>=0.4,<0.7", "prefect>=2.16"]
 # Hyper-parameter search (F2.6): the Optuna study behind `pdm tune`. matplotlib renders
 # the diagnostic PNGs; it is optional — diagnostics fall back to numeric CSVs without it,
 # so the core install and CI stay light (ADR-006).

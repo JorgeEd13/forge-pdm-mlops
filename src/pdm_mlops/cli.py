@@ -10,8 +10,8 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm promote   # F3  — metric-gated promotion of a registered version to production (LIVE)
     pdm rollback  # F3  — restore the previous production version (LIVE)
     pdm serve     # F4  — FastAPI serving the promoted model (LIVE)
-    pdm flow      # F5  — the Prefect drift → retrain loop (the marquee)
-    pdm monitor   # F5  — an Evidently drift report, baseline vs. a season shift
+    pdm monitor   # F5  — an Evidently drift report + decision, baseline vs. a season shift (LIVE)
+    pdm flow      # F5  — the Prefect drift → retrain → gated-promote loop, the marquee (LIVE)
 
 Unimplemented stubs exit non-zero with a pointer to the phase that lands them, so
 the command stays honest about what is and isn't wired yet.
@@ -151,7 +151,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
     flow = sub.add_parser("flow", help="run the drift → retrain Prefect flow (F5)")
     flow.add_argument("--season", default=None, help="generator season used as the drift stimulus")
-    sub.add_parser("monitor", help="emit an Evidently drift report (F5)")
+    flow.add_argument("--seed", type=int, default=None, help="seed threading the retrain")
+    flow.add_argument(
+        "--min-delta",
+        type=float,
+        default=None,
+        help="promotion gate tolerance passed to F3 promote (default 0.0)",
+    )
+    monitor_p = sub.add_parser("monitor", help="emit an Evidently drift report + decision (F5)")
+    monitor_p.add_argument(
+        "--season", default=None, help="generator season used as the drift stimulus"
+    )
     return parser
 
 
@@ -272,9 +282,21 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run(app, host=args.host, port=args.port)
         return 0
     if args.command == "flow":
-        return _not_yet("F5")
+        from . import flows as _flows
+
+        result = _flows.run_drift_retrain(
+            season=args.season, seed=args.seed, min_delta=args.min_delta
+        )
+        print(result.summary())
+        # A stable-data cycle (no retrain) and a held candidate both exit non-zero, so a
+        # scheduled runner can tell "a model was promoted" from "nothing changed".
+        return 0 if result.promoted else 1
     if args.command == "monitor":
-        return _not_yet("F5")
+        from . import monitor as _monitor
+
+        report = _monitor.detect_drift(season=args.season)
+        print(report.summary())
+        return 0 if report.drifted else 1
     parser.print_help()
     return 0
 
