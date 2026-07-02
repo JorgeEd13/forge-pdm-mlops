@@ -56,10 +56,13 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
 > **F3 (registry governance — metric-gated promotion + rollback)**, **F4 (FastAPI serving the
 > `production`-aliased model, Dockerfile + compose)**, and **F5 (the marquee — the drift →
 > auto-retrain loop that routes every promotion through the F3 gate)** are all shipped — so the
-> spine now runs **train → registry → serve → drift → retrain → cloud-scheduled**. The only stretch
-> left is a hosted free-tier `/health` link (F6) — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
-> Nothing here implies a live production deployment; the drift→retrain loop is a
-> **demonstrated closed loop on synthetic data**.
+> spine now runs **train → registry → serve → drift → retrain → cloud-scheduled**. **F6 (the
+> hosted free-tier deploy) is shipped too**: a self-contained image
+> ([`Dockerfile.hf`](Dockerfile.hf)) that bakes a **demo** registry so a live `/health` serves a
+> real prediction — see [`docs/DEPLOY.md`](docs/DEPLOY.md). Nothing here implies a live
+> *production* deployment; the served model is a fixture-trained **demo** (labelled everywhere),
+> and the drift→retrain loop is a **demonstrated closed loop on synthetic data**. The ≈0.82 model
+> below is the full-data one `pdm train` produces locally — the only number ever reported.
 >
 > 🔎 **The score is real (≈ 0.82), and that took fixing the *data*, not the model.**
 > Early on the classifier scored ≈ 0.55 — chance. Rather than tune the model, I measured
@@ -372,9 +375,20 @@ pdm ceiling           # F2.8 — decomposition + fenced upper-bound + stacking r
 pdm promote           # F3   — metric-gated promotion of a registered version to production (LIVE)
 pdm rollback          # F3   — restore the previous production version (LIVE)
 pdm serve             # F4   — FastAPI serving the production-aliased model (LIVE)
-pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee)
-pdm monitor           # F5   — an Evidently drift report
+pdm flow --season heatwave   # F5 — the drift → retrain loop (the marquee) (LIVE)
+pdm monitor           # F5   — an Evidently drift report + decision (LIVE)
 ```
+
+**Hosted deploy (F6).** A self-contained image bakes a **demo** registry so a fresh cloud deploy
+serves a real prediction — a live `/health` a reviewer can click. See
+[`docs/DEPLOY.md`](docs/DEPLOY.md) (Hugging Face Spaces, with Render/Fly.io alternatives):
+
+```bash
+docker build -f Dockerfile.hf -t forge-pdm-mlops:hf .
+docker run --rm -p 8000:8000 forge-pdm-mlops:hf
+curl -s localhost:8000/health   # {"status":"ok","model_loaded":true,"model_version":"1"}
+```
+
 
 ## Roadmap
 
@@ -391,8 +405,8 @@ pdm monitor           # F5   — an Evidently drift report
 | **F2.10** | ↗ *future work (deferred by design)* — cross-dataset validation on **NASA C-MAPSS** |
 | **F3** | Model registry governance — **metric-gated promotion** to a `production` alias + **rollback** (a worse candidate does not promote; asserted) ✅ |
 | **F4** | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production` alias + Dockerfile + compose (serving + MLflow UI); follows a promotion/rollback with no redeploy ✅ |
-| **F5** | **Drift monitoring + the auto-retrain loop (marquee)** ☐ |
-| **F6** | *(stretch)* hosted free-tier deploy → a live `/health` link ☐ |
+| **F5** | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently drift report + share-threshold decision + a Prefect `detect → retrain → promote-or-hold` loop that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade ✅ |
+| **F6** | *(stretch)* hosted free-tier deploy (**Hugging Face Spaces**) → a live `/health` link. A self-contained `Dockerfile.hf` bakes a **demo** registry so a fresh deploy serves a real prediction; labelled a demo everywhere (ADR-001 intact — a fixture model is *served, never reported*) ✅ |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for objectives and definitions of done, and
 [`docs/DECISIONS.md`](docs/DECISIONS.md) for the design rationale (ADRs).

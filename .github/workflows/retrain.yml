@@ -5,8 +5,12 @@
 # cron (and on demand), so the orchestration gate is closed by Prefect while the
 # free-tier cloud-execution bonus is closed here — they layer, not duplicate.
 #
-# F0 ships the trigger surface; the flow it calls lands in F5. Until then the step
-# is a clearly-marked placeholder, so the workflow is honest about what's wired.
+# F5 shipped the flow (`pdm flow`), so this now runs it for real: the season-shifted
+# window is regenerated, drift is detected, and — only if it clears the F3 gate — a
+# retrained model is promoted. `--min-delta -1.0` is NOT used here: the scheduled run
+# uses the real gate, so a worse retrain is held (the loop cannot auto-degrade). The
+# job tracks to an ephemeral runner-local SQLite registry; it demonstrates the loop
+# executing on free cloud infra, not a shared production registry.
 name: scheduled-retrain
 
 on:
@@ -29,10 +33,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install (ops extras for Prefect + Evidently)
-        run: python -m pip install -e .[ops]
+      # The flow regenerates the season-shifted window (the drift stimulus) via the
+      # pinned generator, so it needs [generate] on top of [ops] (Prefect + Evidently).
+      - name: Install (ops + generate extras — Prefect, Evidently, the generator)
+        run: python -m pip install -e ".[ops,generate]"
 
       - name: Run the drift → retrain flow
-        run: |
-          echo "Placeholder — the Prefect flow lands in F5 (see docs/ROADMAP.md)."
-          echo "Will run: pdm flow --season '${{ github.event.inputs.season || 'heatwave' }}'"
+        run: pdm flow --season "${{ github.event.inputs.season || 'heatwave' }}"

@@ -749,3 +749,73 @@ so core CI (which installs only `[dev]`) skips them cleanly, exactly like `[serv
 `[deep]`. **F5 closes the marquee gate — a complete production spine now runs end to end:
 train → registry → serve → drift → retrain → cloud-scheduled.** F6 (a hosted free-tier `/health`
 link) is the only stretch left.
+
+---
+
+## ADR-014 — Hosted free-tier deploy: a self-contained image that **bakes a fixture-trained demo registry**, so a live `/health` shows a real served model without violating "never report off the fixture"
+
+**Status.** Accepted (F6).
+
+**Context.** F4 serves the `production`-aliased model over FastAPI; F6's goal is a **live,
+clickable `/health` link** on a free tier (Hugging Face Spaces — a permanent free URL, no idle
+cold-sleep, fits the ML narrative) so the serving layer is a reachable artifact, not just a
+`docker compose up` claim. Two constraints collide:
+
+1. **A fresh deploy has an empty registry.** The F4 image (`Dockerfile`) mounts an *external*
+   registry volume — perfect for the compose stack, useless for a hosted deploy that has no
+   volume to mount. With nothing promoted, `/health` honestly returns `model_loaded=false` and
+   `/predict` 503s: a reviewer clicking the link sees no model. A weak showcase.
+2. **ADR-001 forbids reporting a fixture-scored metric.** The free build runs offline (no
+   generator, no network), so the only model it can bake is one trained on the committed *smoke
+   fixture* — exactly the thing ADR-001 says never to report.
+
+**Decision.** Ship a **separate self-contained image** (`Dockerfile.hf`) that **bakes a demo
+registry at build time** via `scripts/seed_demo_registry.py`: train on the fixture → register the
+winner → promote it to `production` through the **same F3 gate**. The endpoint then answers a real
+prediction the moment it boots. The ADR-001 boundary is respected by **scope, not by hiding it**:
+ADR-001 forbids *reporting* a fixture-scored number, not *serving* a demo to prove the endpoint is
+wired. The demo status is made **unmissable on every surface** — the registered version is tagged
+`demo=fixture`, `/model-info` exposes the metric so the (fixture) provenance is inspectable, and
+the README's live-link line + `docs/DEPLOY.md` both call it a demo model. The real ≈0.82 model is
+the one `pdm train` produces on the full data locally, and that is the only number ever quoted.
+
+**Two load-bearing details.**
+
+- **A class-rich fixture seed (0), not the default (42).** The fixture's unit-grouped split at
+  the default seed 42 lands a **single-class** held-out set → `DegenerateSplit` (an ADR-004
+  fixture artifact; the full data is class-rich at any seed). The bake pins seed **0**, which is
+  class-rich, so the fixture train scores a real ROC-AUC and registers a usable model. (Verified:
+  seeds 0/1/2/4/6/8/9/10/11 are class-rich on this fixture; 42 is not.)
+- **Build path must equal run path.** MLflow stores artifact locations as **absolute paths** in
+  the tracking DB, so a baked store is only relocatable if the path is unchanged. `Dockerfile.hf`
+  fixes it at `/mlflow` for both bake and serve, and the seed script pins an explicit experiment
+  `artifact_location` **inside** the store dir (MLflow otherwise scatters artifacts to a
+  CWD-relative `mlruns/` that would not travel with the image) — so the whole store is one
+  self-contained tree the image carries.
+
+**Also in F6.** The scheduled `retrain.yml` workflow, a marked F5 *placeholder* until now, is
+wired to run `pdm flow` for real (installs `[ops,generate]`, since the loop regenerates the
+season-shifted window via the pinned generator). It uses the **real F3 gate** (no `--min-delta`
+escape), so the cloud-scheduled loop cannot auto-degrade either — the same guarantee as F5's
+in-process loop, now demonstrated executing on free cloud infra.
+
+**Alternatives rejected.**
+- *Deploy empty (`model_loaded=false`).* The purest live link, but a reviewer clicking it sees no
+  model — weaker as a showcase, and the honest-status can be preserved just as well by labelling
+  the demo, which we do.
+- *Bake a full-data model.* Impossible offline on a free runner (no generator/network) and it
+  would drag the multi-GB dataset into the build; also pointless, since the served demo's *number*
+  is never reported regardless.
+- *Reuse the F4 `Dockerfile`.* Its mounted-volume design has no promoted model on a hosted deploy;
+  a self-contained image is the right tool for a host with no persistent volume.
+
+**Consequences.** New `Dockerfile.hf` (self-contained, non-root UID 1000, HF `app_port` 8000) +
+`scripts/seed_demo_registry.py` (`seed_registry` + a `--store-dir` CLI) + `docs/DEPLOY.md` (the HF
+Spaces front-matter, the push-to-Space steps, the local build smoke-test, Render/Fly.io
+alternatives on the same image). `test_seed_demo_registry.py` (4, offline, `[serve]`-gated):
+promotes a **demo-tagged** version, a **fresh** serving process over the baked store reads
+`model_loaded=true` and predicts, the store is **self-contained** (artifacts colocated), and the
+bake is **deterministic** (same seed → same probabilities). `retrain.yml` runs `pdm flow`.
+**The production spine is now not just complete but reachable — a live `/health` a reviewer can
+click.** The bake was verified end-to-end natively (a fresh `ModelStore` over the baked store
+serves a real `/predict`); the container build runs on HF's runners.

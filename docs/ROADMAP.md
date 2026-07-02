@@ -18,7 +18,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F3** | ✅ done | Model registry governance: metric-gated **promotion** to a `production` **alias** (MLflow 3, not deprecated stages) + **rollback** to the prior version. **A worse candidate does not promote** (asserted); rollback restores the previous production version (ADR-008) |
 | **F4** | ✅ done | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production`-**aliased** model + Dockerfile + compose (serving + MLflow UI). A promotion/rollback (F3) changes what `/predict` answers with **no redeploy**; probabilities via the native flavor; `TestClient` round-trips a prediction (ADR-009) |
 | **F5** | ✅ done | **Drift monitoring + the auto-retrain loop (marquee)** — `monitor.py` (Evidently `DataDriftPreset` over the feature signals + a **share-threshold** drift decision) + `flows.py` (a Prefect `detect_drift → [if drift] → retrain → promote-or-hold` flow that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade) + the scheduled GH Actions trigger. Runs **in-process** on the fixture; `pdm monitor` / `pdm flow` live (ADR-013) |
-| **F6** | ☐ | *(stretch)* hosted free-tier deploy (Fly.io / Render / HF Spaces) → a live `/health` link |
+| **F6** | ✅ done | *(stretch)* hosted free-tier deploy (Hugging Face Spaces) → a live `/health` link. A **self-contained** `Dockerfile.hf` **bakes a fixture-trained demo registry** at build time (train → register → promote through the same F3 gate), so a fresh cloud deploy serves a real prediction and `/health` shows `model_loaded=true` — labelled a **demo** everywhere (ADR-001 boundary intact: a fixture model is *served, never reported*). `scripts/seed_demo_registry.py` + `docs/DEPLOY.md`; `retrain.yml` now runs `pdm flow` for real. The ≈0.82 full-data model is what `pdm train` produces locally (ADR-014) |
 
 ---
 
@@ -275,8 +275,27 @@ below in full so the judgment (and the scoping) is on the record.
   offline tests (`test_monitor.py` 6 + `test_flows.py` 5), both `importorskip`-ing the
   `[ops]` libs so core CI stays light. **The production spine now runs end to end.**
 
-## F6 — (stretch) hosted free-tier deploy
+## F6 — (stretch) hosted free-tier deploy ✅
 
-- **Objective.** A live link.
-- **How.** Deploy the serving image to a free tier (Fly.io / Render / HF Spaces).
-- **DoD.** A reachable `/health` in the README. Only if low-friction.
+- **Objective.** A live link — the serving layer as a reachable artifact, not just a
+  `docker compose up` claim.
+- **How.** A **self-contained** image (`Dockerfile.hf`, distinct from the F4 mounted-volume
+  `Dockerfile`) that **bakes a demo registry at build time**
+  (`scripts/seed_demo_registry.py`: train on the fixture → register → promote to `production`
+  through the same F3 gate), so a hosted deploy — which has no volume to mount and an empty
+  registry — still serves a real prediction on boot. Target **Hugging Face Spaces** (a Docker
+  Space, permanent free URL). `docs/DEPLOY.md` has the Space front-matter + push steps + a local
+  build smoke-test + Render/Fly.io alternatives on the same image.
+- **The honesty boundary (ADR-014).** The baked model trains on the **smoke fixture** (the build
+  is offline), which ADR-001 forbids *reporting* — but ADR-001 forbids reporting, not *serving*:
+  this is a **demo model for the live endpoint**, tagged `demo=fixture`, exposed as such by
+  `/model-info` and the README. The real ≈0.82 model is the local `pdm train` one; that number is
+  the only one ever quoted.
+- **Also.** `retrain.yml` (an F5 placeholder until now) runs `pdm flow` for real on the cron —
+  installs `[ops,generate]`, uses the **real gate** (no `--min-delta` escape), so the
+  cloud-scheduled loop can't auto-degrade either.
+- **DoD — met.** A `Dockerfile.hf` that bakes a promoted demo model; a fresh serving process over
+  the baked store returns `model_loaded=true` + a real `/predict` (verified natively; the
+  container build runs on HF's runners); `test_seed_demo_registry.py` (4, offline) asserts the
+  promote/serve/self-contained/deterministic behaviour; `docs/DEPLOY.md` documents the reachable
+  `/health` and the README carries the link once the Space is pushed. **ADR-014.**

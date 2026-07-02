@@ -4,6 +4,44 @@ Updated: 2026-07-02
 
 ## Current focus
 
+**F6 (Hosted free-tier deploy — the live `/health` link) — DONE (2026-07-02, ADR-014). The
+production spine is now not just complete but REACHABLE.** A fresh cloud deploy starts with an
+empty registry, so a live `/health` would honestly say `model_loaded=false`. F6 ships a
+**self-contained** image (`Dockerfile.hf`, distinct from the F4 mounted-volume `Dockerfile`) that
+**bakes a demo registry at build time** so the endpoint serves a real prediction on boot:
+
+- **`scripts/seed_demo_registry.py`** — `seed_registry(store_dir, seed=0)` trains on the committed
+  smoke fixture → registers the winner → promotes it to `production` through the **same F3 gate**,
+  into a **self-contained** SQLite store (DB + artifacts colocated via an explicit experiment
+  `artifact_location`, so the image can carry it). Two load-bearing details: **(1)** it pins a
+  **class-rich fixture seed (0)** — the default seed 42 lands a single-class fixture split →
+  `DegenerateSplit` (an ADR-004 artifact; the full data is class-rich at any seed); **(2)** build
+  path must equal run path (MLflow bakes **absolute** artifact URIs into the DB), so `Dockerfile.hf`
+  fixes both at `/mlflow`.
+- **The honesty boundary (ADR-014 / ADR-001 intact).** The baked model trains on the *fixture*,
+  which ADR-001 forbids **reporting** — but ADR-001 forbids reporting, not **serving**. This is a
+  **demo model for the live endpoint**, tagged `demo=fixture`, exposed by `/model-info`, and called
+  a demo by the README + `docs/DEPLOY.md`. The real ≈0.82 model is the local `pdm train` one; that
+  number is the only one ever quoted.
+- **`docs/DEPLOY.md`** — the Hugging Face Spaces front-matter (`sdk: docker`,
+  `dockerfile_path: Dockerfile.hf`, `app_port: 8000`), the push-to-Space steps, a local build
+  smoke-test, and Render/Fly.io alternatives on the same image.
+- **`retrain.yml`** — the F5 *placeholder* is gone; the scheduled workflow now runs `pdm flow` for
+  real (installs `[ops,generate]`, uses the **real F3 gate**, so the cloud-scheduled loop can't
+  auto-degrade either).
+- **`test_seed_demo_registry.py` (4, offline, `[serve]`-gated):** promotes a **demo-tagged**
+  version; a **fresh** serving process over the baked store reads `model_loaded=true` and predicts
+  (the F6 DoD in miniature); the store is **self-contained**; the bake is **deterministic**.
+  **ADR-014.**
+
+  > **Verification note (2026-07-02):** the bake→serve cycle was verified **end-to-end natively**
+  > (a fresh `ModelStore` over the baked store returns `model_loaded=true`, a real `/predict`
+  > probability, and `/model-info`). The 4 F6 tests pass offline. The **container build itself**
+  > (`docker build -f Dockerfile.hf`) was **not** run here — Docker Desktop's daemon was down on the
+  > desktop; it runs on HF's build runners on push (or locally once the daemon is up). The push to a
+  > Hugging Face Space + putting the resulting live URL in the README is the **last manual step**
+  > (Jorge's HF account) — everything it needs is wired.
+
 **F5 (Drift monitoring + the auto-retrain loop — THE MARQUEE) — DONE (2026-07-02, on the
 desktop). The production spine now runs end to end (ADR-013).** The closed loop the repo
 exists to demonstrate: a distribution shift is detected, a fresh model is trained on the
@@ -500,6 +538,37 @@ runnable skeleton — closed at an earlier boundary.)
   `importorskip` the `[ops]` libs. **121 total** (110 + 11); the 11 run where `[ops]` is
   installed (notebook/CI). **ADR-013.**
 
+### F6 — Hosted free-tier deploy (2026-07-02)
+
+- **`scripts/seed_demo_registry.py`** — `seed_registry(store_dir, seed=0)` trains on the fixture
+  → registers the winner → promotes it to `production` through the **unchanged F3 gate**, into a
+  self-contained SQLite store (explicit experiment `artifact_location` inside `store_dir` so DB +
+  artifacts are colocated and the image can carry them). Pins a **class-rich fixture seed (0)** —
+  seed 42 (the default) lands a single-class fixture split → `DegenerateSplit`. Tags the version
+  `demo=fixture` + `provenance=…`. Returns the promoted version (str-normalised at the boundary,
+  matching `registry`). A `--store-dir` CLI (`python scripts/seed_demo_registry.py --store-dir /mlflow`).
+- **`Dockerfile.hf`** — a **self-contained** serving image (vs. the F4 mounted-volume `Dockerfile`):
+  installs `[serve]`, bakes the demo registry at build (`RUN … seed_demo_registry.py --store-dir
+  /mlflow`), runs as non-root UID 1000 (HF Spaces contract), `EXPOSE 8000`, `pdm serve`. Build path
+  == run path (`/mlflow`) so the DB's absolute artifact URIs resolve at run time.
+- **`docs/DEPLOY.md`** — HF Spaces front-matter (`sdk: docker`, `dockerfile_path: Dockerfile.hf`,
+  `app_port: 8000`), push-to-Space steps, local build smoke-test, Render/Fly.io alternatives.
+- **`.github/workflows/retrain.yml`** — the F5 placeholder replaced by a real `pdm flow --season`
+  run; installs `[ops,generate]` (the loop regenerates the season-shifted window); real F3 gate
+  (no `--min-delta` escape) so the scheduled loop can't auto-degrade.
+- **Tests** — `test_seed_demo_registry.py` (4, offline, `[serve]`-gated): promotes a demo-tagged
+  version, a fresh serving process over the baked store reads `model_loaded=true` + predicts (the
+  F6 DoD in miniature), the store is self-contained (artifacts colocated), the bake is
+  deterministic (same seed → same probabilities). **125 total** (121 + 4); the 4 run where
+  `[serve]` is installed. **ADR-014.**
+- **Run here:** the 4 F6 tests pass in isolation (`pytest tests/test_seed_demo_registry.py` → 4
+  passed) + the native bake→serve round-trip. **Not run to completion here:** the *full* offline
+  suite (retrains every fixture model across F2–F2.7 → minutes on the i3; stopped deliberately —
+  same i3-slow-work deferral the repo already uses for F4/F5/F2.8) and the `docker build` (Docker
+  Desktop daemon was down). Both run on CI on push; the full suite also on the notebook. Manual
+  remainder: push to a Hugging Face Space + paste the live URL into the README (Jorge's HF account;
+  DEPLOY.md has the steps).
+
 ## Next step (concrete)
 
 **F5 (drift monitoring + the auto-retrain loop, ADR-013) is DONE — the marquee shipped
@@ -508,9 +577,12 @@ runnable skeleton — closed at an earlier boundary.)
 step is F3's `promote` unchanged (a worse candidate is held, proven by the `min_delta=-1.0`
 test). `pdm monitor` / `pdm flow` are live — the last two roadmap stubs are gone.
 
-**F6 (stretch) — the only phase left: a hosted free-tier `/health` link.** Deploy the F4
-serving image to Fly.io / Render / HF Spaces → a reachable `/health` in the README. Build only
-if low-friction (Jorge's call); the spine is already complete without it.
+**F6 (hosted free-tier `/health` link) is DONE (2026-07-02, ADR-014).** The self-contained
+`Dockerfile.hf` bakes a demo registry; the bake→serve cycle is verified natively and the 4 F6
+tests pass offline. **The only thing left is the manual push to a Hugging Face Space + pasting the
+resulting live URL into the README** (needs Jorge's HF account; `docs/DEPLOY.md` has every step).
+The whole ROADMAP (F0–F6) is now shipped except that one manual publish and the notebook-side
+green record.
 
 **Merge-at-home note (2026-07-02):** F5 was built on the desktop where `[ops]` isn't installed,
 so `test_monitor`/`test_flows` (11 tests) **skip here** and must be run on the notebook/CI to
@@ -543,13 +615,16 @@ is the *visible, ground-truth-scored process + the guards*, not accuracy — and
 HPO delta is itself the honest, postable confirmation of that on realistically learnable
 data.
 
-One phase per session — **F5 (drift monitoring + the auto-retrain loop, ADR-013) shipped at
-this boundary**: the marquee, closing the drift→retrain gate and completing the production
-spine (train → registry → serve → drift → retrain → cloud). Offline core green on the i3 (the
-11 `[ops]` F5 tests skip here, run on the notebook/CI). The F2.* modelling arc stays closed
-(F2.9/F2.10 deferred by design). **F6 (a hosted free-tier `/health` link) is the only phase
-left — a low-friction stretch.** Still pending on the notebook (independent of F5): the F4
-clean-110 run and the F2.8 GPU `pdm ceiling` numbers.
+**F6 (hosted free-tier `/health` link, ADR-014) shipped at this boundary** — a self-contained
+`Dockerfile.hf` bakes a fixture-trained **demo** registry so a fresh cloud deploy serves a real
+prediction; the bake→serve cycle is verified natively and 4 offline tests pass. With F6 done,
+**the full ROADMAP F0–F6 is shipped** (F2.9/F2.10 deferred by design); the production spine is now
+complete *and reachable*. Offline core green on the i3 (the `[ops]` F5 tests + the `[serve]` F6/F4
+tests skip where the extras aren't installed, run on the notebook/CI). **Manual remainder
+(Jorge):** push to a Hugging Face Space + paste the live URL into the README (`docs/DEPLOY.md` has
+every step). Still pending on the notebook (independent of F6): the F4 clean-110 run, the 11
+`[ops]` F5 tests' green, and the F2.8 GPU `pdm ceiling` numbers — a merge that's additive across
+different STATE lines.
 
 ## Notes
 
