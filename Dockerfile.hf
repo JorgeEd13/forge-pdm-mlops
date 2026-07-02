@@ -48,6 +48,10 @@ COPY scripts ./scripts
 ENV MLFLOW_STORE_DIR=/mlflow
 ENV MLFLOW_TRACKING_URI="sqlite:////mlflow/mlflow.db"
 
+# MLflow tries to tag each run with a git SHA; the slim image has no git, so it logs a
+# noisy (harmless) WARNING per run. Silence it — there is no repo to introspect here.
+ENV GIT_PYTHON_REFRESH=quiet
+
 # Cache-bust: bump this integer to force HF to rebuild the final layers (the entrypoint
 # CMD) instead of serving a stale fully-cached image. HF caches layers aggressively; a
 # CMD change alone was reused from cache on the first attempt. Bumping an ARG here
