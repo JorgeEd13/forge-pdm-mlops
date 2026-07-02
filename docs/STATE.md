@@ -4,8 +4,9 @@ Updated: 2026-07-02
 
 ## Current focus
 
-**F6 (Hosted free-tier deploy — the live `/health` link) — DONE (2026-07-02, ADR-014). The
-production spine is now not just complete but REACHABLE.** A fresh cloud deploy starts with an
+**F6 (Hosted free-tier deploy — the live `/health` link) — DONE & LIVE (2026-07-02, ADR-014).
+The production spine is now not just complete but REACHABLE — a clickable endpoint:
+https://jorgeed-forge-pdm-mlops.hf.space/health** A fresh cloud deploy starts with an
 empty registry, so a live `/health` would honestly say `model_loaded=false`. F6 ships a
 **self-contained** image (`Dockerfile.hf`, distinct from the F4 mounted-volume `Dockerfile`) that
 **bakes a demo registry at build time** so the endpoint serves a real prediction on boot:
@@ -34,13 +35,35 @@ empty registry, so a live `/health` would honestly say `model_loaded=false`. F6 
   (the F6 DoD in miniature); the store is **self-contained**; the bake is **deterministic**.
   **ADR-014.**
 
-  > **Verification note (2026-07-02):** the bake→serve cycle was verified **end-to-end natively**
-  > (a fresh `ModelStore` over the baked store returns `model_loaded=true`, a real `/predict`
-  > probability, and `/model-info`). The 4 F6 tests pass offline. The **container build itself**
-  > (`docker build -f Dockerfile.hf`) was **not** run here — Docker Desktop's daemon was down on the
-  > desktop; it runs on HF's build runners on push (or locally once the daemon is up). The push to a
-  > Hugging Face Space + putting the resulting live URL in the README is the **last manual step**
-  > (Jorge's HF account) — everything it needs is wired.
+  > **LIVE (2026-07-02): https://jorgeed-forge-pdm-mlops.hf.space/health → `{"status":"ok",
+  > "model_loaded":true,"model_version":"1"}`.** Deployed to a Hugging Face Docker Space and
+  > confirmed serving a real prediction. Getting it live surfaced **three container-only bugs a
+  > native run hides** (all fixed; reusable HF-deploy lessons):
+  >
+  > 1. **HF ignores the front-matter `dockerfile_path`.** It built the default `Dockerfile` (the F4
+  >    mounted-volume, no-bake image) instead of `Dockerfile.hf` — the build log stopped at
+  >    `COPY data` with no bake, and `/health` was `model_loaded=false`. **Fix:** on the Space's
+  >    `space-deploy` branch the self-contained bake image **is** the literal `Dockerfile` (and
+  >    `dockerfile_path` dropped). GitHub `main` keeps the F4 `Dockerfile` + a separate `Dockerfile.hf`.
+  > 2. **A pip-installed package resolves data files off `site-packages`, not the repo.**
+  >    `config.SAMPLE_READINGS` = `Path(config.__file__).parents[2]/data/...` → in the container that
+  >    is `/usr/local/lib/python3.12/data/...` (FileNotFoundError), because the package is installed,
+  >    not run from the source tree. **Fix:** `seed_demo_registry.features_fixture()` resolves the
+  >    fixture from the **script's** `../data`, not `config.REPO_ROOT`.
+  > 3. **The demo bake belongs at startup, not build.** MLflow bakes **absolute** artifact paths into
+  >    the DB, and HF only smudges the LFS fixture into a real file in the *running* container — so a
+  >    build-time bake (as root, maybe on an un-smudged pointer) leaves a registry the runtime user
+  >    can't serve. **Fix:** `scripts/hf_entrypoint.sh` bakes at container start (as `appuser`, at
+  >    `/mlflow`, after smudge), `--skip-if-promoted` for idempotent warm restarts, fails loud on an
+  >    un-smudged pointer. A `GET /` friendly index was added so the Space "App" tab isn't a 404, and
+  >    `GIT_PYTHON_REFRESH=quiet` silences MLflow's harmless "no git" warning.
+  >
+  > **Space-branch mechanics:** the Space tracks a **`space-deploy`** branch (front-matter README +
+  > LFS-tracked binaries [HF requires binaries via LFS] + the literal bake `Dockerfile`), kept off
+  > `main` so the GitHub showcase stays LFS-free and its fixture a normal file. Update flow:
+  > `git checkout space-deploy && git cherry-pick <main commits> && git push space space-deploy:main`
+  > (`scripts/deploy_space.sh` automates it). The 4 F6 tests pass offline; the bake→serve cycle is
+  > also verified live on HF.
 
 **F5 (Drift monitoring + the auto-retrain loop — THE MARQUEE) — DONE (2026-07-02, on the
 desktop). The production spine now runs end to end (ADR-013).** The closed loop the repo
@@ -577,12 +600,12 @@ runnable skeleton — closed at an earlier boundary.)
 step is F3's `promote` unchanged (a worse candidate is held, proven by the `min_delta=-1.0`
 test). `pdm monitor` / `pdm flow` are live — the last two roadmap stubs are gone.
 
-**F6 (hosted free-tier `/health` link) is DONE (2026-07-02, ADR-014).** The self-contained
-`Dockerfile.hf` bakes a demo registry; the bake→serve cycle is verified natively and the 4 F6
-tests pass offline. **The only thing left is the manual push to a Hugging Face Space + pasting the
-resulting live URL into the README** (needs Jorge's HF account; `docs/DEPLOY.md` has every step).
-The whole ROADMAP (F0–F6) is now shipped except that one manual publish and the notebook-side
-green record.
+**F6 (hosted free-tier `/health` link) is DONE & LIVE (2026-07-02, ADR-014):
+https://jorgeed-forge-pdm-mlops.hf.space/health returns `model_loaded:true`.** Deployed to a
+Hugging Face Docker Space off the `space-deploy` branch; three container-only bugs found and fixed
+on the way (dockerfile_path ignored / installed-package data path / startup-bake — see the F6
+verification note above). **The whole ROADMAP F0–F6 is shipped, and the spine is live.** Only the
+notebook-side green record remains outstanding (independent of F6).
 
 **Merge-at-home note (2026-07-02):** F5 was built on the desktop where `[ops]` isn't installed,
 so `test_monitor`/`test_flows` (11 tests) **skip here** and must be run on the notebook/CI to

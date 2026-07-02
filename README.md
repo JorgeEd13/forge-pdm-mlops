@@ -7,7 +7,8 @@
 <p align="center"><em>An MLOps pipeline over synthetic predictive-maintenance telemetry — train, track, register, serve, and a drift → auto-retrain loop you can watch close.</em></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/status-F5%20%E2%80%94%20production%20spine%20complete-success" alt="Status: F5 — production spine complete">
+  <a href="https://jorgeed-forge-pdm-mlops.hf.space/health"><img src="https://img.shields.io/badge/live%20demo-%2Fhealth-brightgreen?logo=huggingface&logoColor=white" alt="Live demo — /health"></a>
+  <img src="https://img.shields.io/badge/status-F0%E2%80%93F6%20complete-success" alt="Status: F0–F6 complete">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
@@ -15,6 +16,13 @@
   <img src="https://img.shields.io/badge/orchestration-Prefect-070E10" alt="Prefect">
   <img src="https://img.shields.io/badge/data-100%25%20synthetic-blueviolet" alt="100% synthetic data">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <strong>🚀 Live:</strong> <a href="https://jorgeed-forge-pdm-mlops.hf.space/health"><code>/health</code></a> ·
+  <a href="https://jorgeed-forge-pdm-mlops.hf.space/model-info"><code>/model-info</code></a> ·
+  <a href="https://jorgeed-forge-pdm-mlops.hf.space/docs"><code>/docs</code></a>
+  &nbsp;— on Hugging Face Spaces. <em>The served model is a fixture-trained <strong>demo</strong> (labelled as such by <code>/model-info</code>); the ≈0.82 number is the full-data model trained locally.</em>
 </p>
 
 The **MLOps half** of a two-repo story. Its companion
@@ -46,7 +54,7 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F5 (the production spine is complete, end to end).** F0 (skeleton), F1 (real
+> ⚠️ **Honest status — F0–F6 complete (the production spine is complete, end to end, and live).** F0 (skeleton), F1 (real
 > data layer + leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
@@ -57,9 +65,10 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
 > `production`-aliased model, Dockerfile + compose)**, and **F5 (the marquee — the drift →
 > auto-retrain loop that routes every promotion through the F3 gate)** are all shipped — so the
 > spine now runs **train → registry → serve → drift → retrain → cloud-scheduled**. **F6 (the
-> hosted free-tier deploy) is shipped too**: a self-contained image
-> ([`Dockerfile.hf`](Dockerfile.hf)) that bakes a **demo** registry so a live `/health` serves a
-> real prediction — see [`docs/DEPLOY.md`](docs/DEPLOY.md). Nothing here implies a live
+> hosted free-tier deploy) is live**: a self-contained image
+> ([`Dockerfile.hf`](Dockerfile.hf)) that bakes a **demo** registry so the deployed
+> **[`/health`](https://jorgeed-forge-pdm-mlops.hf.space/health)** on Hugging Face Spaces serves a
+> real prediction on boot — see [`docs/DEPLOY.md`](docs/DEPLOY.md). Nothing here implies a live
 > *production* deployment; the served model is a fixture-trained **demo** (labelled everywhere),
 > and the drift→retrain loop is a **demonstrated closed loop on synthetic data**. The ≈0.82 model
 > below is the full-data one `pdm train` produces locally — the only number ever reported.

@@ -228,6 +228,26 @@ def create_app(store: ModelStore | None = None) -> FastAPI:
     )
     app.state.store = store
 
+    @app.get("/")
+    def root() -> dict[str, object]:
+        """A friendly index so the bare URL isn't a 404 (e.g. the HF Space 'App' tab).
+
+        Not part of the model contract — just points a human at the real endpoints and
+        the auto-generated OpenAPI docs.
+        """
+        return {
+            "service": "forge-pdm-mlops serving",
+            "description": "FastAPI over the production-aliased failure classifier (F4). "
+            "The served model is a fixture-trained DEMO (see /model-info); the reported "
+            "~0.82 model is trained on the full dataset locally.",
+            "endpoints": {
+                "GET /health": "liveness + whether a model is loaded",
+                "GET /model-info": "the live production version + the metric it was gated on",
+                "POST /predict": "score a batch of J1939 readings → per-row failure probability",
+                "GET /docs": "interactive OpenAPI docs",
+            },
+        }
+
     @app.get("/health")
     def health() -> dict[str, object]:
         """Liveness + readiness. 200 even with no model, so 'up' ≠ 'ready'."""
