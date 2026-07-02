@@ -1,26 +1,35 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-02 (notebook session: full green suite + F2.8 measured)
+Updated: 2026-07-02 (notebook session: full green suite + F2.8 measured + F5 drift bug fixed)
 
 ## Current focus
 
 **Notebook session 2026-07-02 (verification/recording, not a new phase).** On the notebook
 (`[ops]`+`[cloud]` installed, torch 2.12+cu130, RTX 4050): **(1)** full suite **133/137 green**
 — all F4 serve, F7 store_pg/demo, F2.8 ceiling, F2.7 TCN pass, so the long-pending **F4
-clean-run is recorded**; the **4 reds are all F5 drift** (`test_monitor`×2, `test_flows`×2) from
-a real bug (below). **(2) F2.8 measured on full data** — the ceiling thesis is **refuted** (see
-the F2.8 block). **Deferred to a next session (per Jorge):** fix the F5 drift bug, then the F7
-live Cloud Run deploy (needs interactive `gcloud` auth + billing).
+clean-run is recorded**; the 4 F5-drift reds (`test_monitor`×2, `test_flows`×2) are now
+**FIXED (2026-07-02, ADR-013 follow-up)**. **(2) F2.8 measured on full data** — the ceiling
+thesis is **refuted** (see the F2.8 block). **Still deferred (per Jorge):** the F7 live Cloud
+Run deploy (needs interactive `gcloud` auth + billing).
 
-> **F5 drift bug (found on first-ever real `[ops]` run — these tests always skipped before).**
-> `monitor.detect_drift` declares drift when the *share* of drifted features ≥
-> `DRIFT_SHARE_THRESHOLD = 0.5`. The F5 test shifts **4** thermal signals; `FEATURE_COLUMNS`
-> grew to **9** when `vibration_mms` was added in the 0.2.0 refresh, so share = 4/9 = **0.44 <
-> 0.5** → `drifted=False`, but the tests assert `True` (worked at 4/8 = 0.5 before the feature
-> was added). NOT an evidently-version issue — evidently 0.6.7 flags exactly the 4 shifted cols.
-> Fix next session (ADR-013 policy call): lower the threshold, or make the synthetic shift
-> mirror the real `season='heatwave'` breadth (≥5/9). A clean "tests that never run hide
-> arithmetic" finding.
+> **F5 drift bug — FIXED (2026-07-02, ADR-013 follow-up).** Found on the first-ever real
+> `[ops]` run (these tests had always skipped). Two never-run-code defects, both fixed:
+> **(1) The share threshold was an artifact of the feature count.** `detect_drift` declares
+> drift when the *share* of drifted features ≥ `DRIFT_SHARE_THRESHOLD`, which was `0.5` — set
+> when `FEATURE_COLUMNS` had **8** signals and the synthetic heatwave stand-in shifts **4**
+> (4/8 = exactly 0.5). The 0.2.0 refresh added `vibration_mms` (9 signals), so 4/9 = **0.44 <
+> 0.5** → `drifted=False` while the tests assert `True`. **Decision (Jorge):** threshold →
+> **⅓**, chosen against the physics — the real `heatwave` moves a *correlated cluster* of ~3-4
+> of the 9 signals (`coolant_temp_c` via ambient; `oil_pressure_kpa`/`vibration_mms` via
+> `wear_mult`), so ⅓ fires on a cluster and still rejects one or two noisy columns, independent
+> of the feature count. The 4-signal test shift now clears it with margin (0.44 > 0.33), not on
+> the boundary. **(2) The real `--season` path crashed.** `data.regenerate_full` stored the raw
+> season *string* on the generator config, which expects a `Season` object → `AttributeError`
+> in `config.validate()`; now calls `resolve_season(...)` like the generator's own CLI. Both are
+> the same "tests that never run hide a defect" class. **All 4 reds green** (`pytest
+> tests/test_monitor.py tests/test_flows.py` → 9 passed). Env seam noted in ADR-013: Evidently
+> 0.6.7 + this NumPy trips `np.histogram` on the *full* regen (fixture/offline unaffected), so
+> the end-to-end real-season breadth run waits on an Evidently/NumPy bump.
 
 **F7 (Managed-cloud deploy — Cloud Run + Cloud SQL — the managed-cloud gate) — CODE +
 SCAFFOLDING SHIPPED on the desktop (2026-07-02, ADR-015); the live Cloud Run URL + the
@@ -164,12 +173,11 @@ every promotion — so "auto-retrain" can never mean "auto-degrade". Two new mod
   **ADR-013.**
 
   > **Verification note (2026-07-02):** built + wired on the i3 desktop, where `[ops]`
-  > (Evidently + Prefect) is **not installed**, so `test_monitor`/`test_flows` **skip** here
-  > and the rest of the offline suite stays green (the F5 modules import light — the lazy
-  > `[ops]` imports are proven by a clean `from pdm_mlops import monitor, flows` without the
-  > extra). **The 11 new F5 tests run for real on the notebook / CI where `[ops]` is
-  > installed;** record the green there. (The notebook is separately finishing the pending F4
-  > clean-110 run and the F2.8 GPU `pdm ceiling` numbers — unrelated to F5.)
+  > (Evidently + Prefect) is **not installed**, so `test_monitor`/`test_flows` **skip** there
+  > and the rest of the offline suite stays green. **On the notebook (`[ops]` installed) they
+  > ran for real and surfaced two never-run-code defects — both now fixed (ADR-013 follow-up):
+  > the ⅓ share threshold and the `resolve_season` regeneration bug (see the F5 bug callout in
+  > Current focus). `pytest tests/test_monitor.py tests/test_flows.py` → 9 passed.**
 
 **F4 (Serving — FastAPI over the promoted model) — DONE (2026-07-01). The second spine
 build: the governed version F3 promotes is now served over HTTP (ADR-009).** New

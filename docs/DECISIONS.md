@@ -767,6 +767,39 @@ so core CI (which installs only `[dev]`) skips them cleanly, exactly like `[serv
 train → registry → serve → drift → retrain → cloud-scheduled.** F6 (a hosted free-tier `/health`
 link) is the only stretch left.
 
+**Follow-up (2026-07-02) — the share threshold is set against the physics, not the feature
+count; and the real `--season` regeneration path is fixed.** The first-ever real `[ops]` run
+(these tests had always skipped for lack of the extra) surfaced two things:
+
+1. **`DRIFT_SHARE_THRESHOLD` moved 0.5 → ⅓.** The original 0.5 was calibrated on the
+   pre-`vibration_mms` **8-signal** surface, where the synthetic heatwave stand-in shifts 4
+   correlated thermal signals = 4/8 = *exactly* the threshold. The 0.2.0 data refresh added
+   `vibration_mms` (9 signals), so the *same* 4-signal shift became 4/9 = 0.44 and the trigger
+   silently stopped firing (`drifted=False`, 4 drift tests red). The lesson is that pinning the
+   policy to "half the columns" makes it an artifact of how many features happen to be monitored.
+   Checking the generator, the real `heatwave`'s footprint is a **correlated cluster of ~3-4 of
+   the 9 signals** — `ambient_delta_c=8.0` moves `coolant_temp_c` (`0.15·(ambient−25)`), and
+   `wear_mult=1.20` moves the wear-coupled `coolant_temp_c` / `oil_pressure_kpa` / `vibration_mms`
+   over accumulated wear; `egt_c` / `boost_pressure_kpa` are load/altitude-driven, not ambient.
+   So the trigger should fire when *a cluster moves together* and still reject one or two noisy
+   columns — that is **⅓**, chosen against the physics and independent of the exact feature count.
+   The synthetic test keeps its 4-signal shift (4/9 = 0.44, a comfortable margin over ⅓ rather
+   than sitting on the boundary). A clean "tests that never run hide arithmetic" finding.
+2. **`data.regenerate_full(season=…)` now resolves the preset.** It stored the raw season
+   *string* on the generator config via `replace(cfg, season="heatwave")`, but the generator's
+   `ForgeConfig.season` is a `Season` **object** (ambient delta / wear / hazard multipliers), so
+   `pdm monitor --season` / `pdm flow --season` (the real production path) raised
+   `AttributeError: 'str' object has no attribute 'hazard_mult'` inside `config.validate()`. It
+   now calls `can_telemetry_forge.config.resolve_season(season)` exactly as the generator's own
+   `--season` CLI does. Only the injected-frame offline tests exercised `detect_drift` before, so
+   the real-generator path had never run — the same "never-run code hides a defect" class as (1).
+
+> **Known env seam (not F5 code):** Evidently 0.6.7's `as_dict()` trips a NumPy `np.histogram`
+> `bincount` broadcast error on the **full** 3.47M-row regeneration under this Python 3.14 / NumPy
+> build (the small fixture is fine, so the offline suite is unaffected). Measuring the real
+> heatwave breadth end-to-end waits on an Evidently/NumPy bump; the ⅓ decision above is grounded
+> in the generator physics, which does not depend on that run.
+
 ---
 
 ## ADR-014 — Hosted free-tier deploy: a self-contained image that **bakes a fixture-trained demo registry**, so a live `/health` shows a real served model without violating "never report off the fixture"

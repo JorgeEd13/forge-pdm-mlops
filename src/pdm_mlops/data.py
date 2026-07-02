@@ -58,12 +58,15 @@ def regenerate_full(
             "can-telemetry-forge is not installed; install the '[generate]' extra "
             "to regenerate the full dataset (see ADR-001)."
         )
-    from can_telemetry_forge.config import load_config
+    from can_telemetry_forge.config import load_config, resolve_season
     from can_telemetry_forge.sim.simulate import simulate
 
     cfg = load_config(str(config_path or config.DATASET_CONFIG))
     if season is not None:
-        cfg = replace(cfg, season=season)
+        # The generator's config carries a `Season` object (ambient delta / wear /
+        # hazard multipliers), not the bare preset name; resolve the string to that
+        # preset the same way the generator's own CLI does (`--season`).
+        cfg = replace(cfg, season=resolve_season(season))
     dataset = simulate(cfg)
     return dataset.readings
 

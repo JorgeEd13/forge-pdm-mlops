@@ -88,6 +88,11 @@ DRIFT_SEASON: str = "heatwave"
 #: the model's input features** drift (per Evidently's per-column tests). A share, not
 #: "any one feature", so a single column tripping on noise does not fire a retrain — the
 #: loop should react to a distribution shift, which the ``season`` stimulus produces
-#: across several correlated signals at once. Half the signals is a deliberate,
-#: documented middle ground (a real heatwave shift moves the thermal cluster together).
-DRIFT_SHARE_THRESHOLD: float = 0.5
+#: across several correlated signals at once. Set to **one third** so the trigger fires
+#: when a *correlated cluster* moves together (the real ``heatwave`` footprint is ~3-4 of
+#: the 9 signals: ``coolant_temp_c`` via ambient, plus the wear-coupled ``oil_pressure_kpa``
+#: / ``vibration_mms``) while still rejecting one or two noisy columns. Deliberately a
+#: *fraction of the surface*, not a fixed count, but chosen against the physics rather than
+#: the feature count — the earlier 0.5 was an artifact of the pre-``vibration_mms`` 8-signal
+#: surface (4/8) that silently became "≥5 of 9" when the 9th feature was added (ADR-013).
+DRIFT_SHARE_THRESHOLD: float = 1.0 / 3.0
