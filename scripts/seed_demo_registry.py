@@ -102,10 +102,19 @@ def seed_registry(store_dir: Path, *, seed: int = DEMO_SEED) -> str:
 
 
 def features_fixture():
-    """Load the committed smoke fixture as the demo training frame."""
+    """Load the committed smoke fixture as the demo training frame.
+
+    Resolves the fixture relative to the **repo checkout** (this script's ``../data``),
+    not ``config.SAMPLE_READINGS``. In the container the package is *pip-installed* into
+    site-packages, so ``config.REPO_ROOT`` (``Path(config.__file__).parents[2]``) points
+    at the Python install dir, not the repo — but the ``data/`` tree was ``COPY``'d next
+    to this script's parent. Falls back to the config path for a normal source checkout.
+    """
     import pandas as pd
 
-    return pd.read_parquet(config.SAMPLE_READINGS)
+    repo_fixture = Path(__file__).resolve().parents[1] / "data" / "sample_readings.parquet"
+    fixture = repo_fixture if repo_fixture.exists() else config.SAMPLE_READINGS
+    return pd.read_parquet(fixture)
 
 
 def main() -> None:
