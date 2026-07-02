@@ -1,8 +1,54 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-02
+Updated: 2026-07-02 (F7 code + scaffolding)
 
 ## Current focus
+
+**F7 (Managed-cloud deploy — Cloud Run + Cloud SQL — the managed-cloud gate) — CODE +
+SCAFFOLDING SHIPPED on the desktop (2026-07-02, ADR-015); the live Cloud Run URL + the
+`[cloud]` green run land on the notebook.** This closes the one gate F0–F6 deliberately left
+open: *operate a managed cloud runtime with a managed resource in production* — the senior
+claim that "containerize an app" (F4/F6) is not. HF Spaces (F6) is free hosting; F7 runs the
+**same** `Dockerfile.hf` image on **Google Cloud Run** (a managed, serverless container runtime,
+not a VM) with **Cloud SQL for Postgres** as a **managed resource**.
+
+- **`src/pdm_mlops/store_pg.py`** — the prediction log the managed DB exists for. `open_log(url)`
+  → a `PredictionLog` (SQLAlchemy Core `append`/`recent` over the SAME code on Postgres in prod
+  and tmp **SQLite** in tests) or **`None`** when `DATABASE_URL` is unset. **Graceful degrade is a
+  hard invariant:** local `pdm serve`, the F6 HF Space, and CI all run **without** a DB and the
+  demo simply doesn't persist — so adding the managed resource **cannot break** any existing
+  deploy. **No PII by construction:** stores only the J1939 signal values (restricted to
+  `FEATURE_COLUMNS` so a crafted key can't widen the row), the probability, the model version, a
+  UTC timestamp — no user identity. A logging error is swallowed to a no-op (the model already
+  answered; a missing row is the only cost). New `[cloud]` extra (`sqlalchemy` + `psycopg`),
+  imported lazily so the package/core-CI never needs it.
+- **The demo UI (`serve.py`)** — gives the managed DB an honest job. `GET /demo` is a
+  self-contained (inline CSS/JS, **no CDN** — clean-room/offline-safe) "set the J1939 parameters →
+  get the failure probability" page (the click-and-try pattern the receivables-agent showcase
+  uses), carrying the **same `demo=fixture` honesty banner** as `/model-info` + the README.
+  `POST /demo/predict` scores via the shared `_score` core **and** logs each row; the page reads
+  the recent predictions back. `create_app(prediction_log=…)` is injectable (defaults to
+  `open_log()`); a `DemoPredictResponse.persisted` flag labels the panel honestly.
+- **`scripts/deploy_cloudrun.sh`** — the deploy: Artifact Registry repo + **Cloud Build** (no local
+  Docker daemon) of `Dockerfile.hf` (already `$PORT`-aware via `hf_entrypoint.sh`) + Cloud SQL
+  instance + **Secret Manager** (`DATABASE_URL`, password generated at deploy, never committed) +
+  `gcloud run deploy` (`--add-cloudsql-instances`, `--set-secrets`, `--allow-unauthenticated`).
+  **No secret in the repo** — only the parametrized script.
+- **`docs/DEPLOY.md`** — a "Managed cloud: Cloud Run + Cloud SQL" section (one-time `gcloud`
+  enablement, the deploy command, verify, tear-down) alongside the HF/Render/Fly.io targets.
+- **Tests (13 new, green offline on the desktop):** `test_store_pg.py` (8, `[cloud]`-gated:
+  round-trip, no-PII key restriction, era-NULL preserved, graceful-degrade on unset/bad URL,
+  best-effort swallow on a backend error) + `test_demo.py` (5, `[serve]`+`[cloud]`-gated: demo
+  round-trip **with and without** a log, the 503 contract, the honesty banner on the page,
+  persistence + the recent-predictions panel). **Both extras are installed on this desktop, so all
+  13 ran here (not skipped): 8 passed + 5 passed.** **ADR-015.**
+
+  > **Runs here (desktop, 2026-07-02):** `pytest tests/test_store_pg.py` → **8 passed**;
+  > `pytest tests/test_demo.py` → **5 passed** (4m10s — the fixture-training tax on the i3, not a
+  > defect). **Lands on the notebook:** the actual `gcloud`/Cloud Build deploy (interactive auth +
+  > the Docker path), the live Cloud Run URL + Cloud SQL instance, and folding these 13 into a full
+  > green suite. Only then does the README get the `/demo` link and the career-system managed-cloud
+  > gate flip — until the URL is live it is *in progress*, not closed.
 
 **F6 (Hosted free-tier deploy — the live `/health` link) — DONE & LIVE (2026-07-02, ADR-014).
 The production spine is now not just complete but REACHABLE — a clickable endpoint:
@@ -593,6 +639,24 @@ runnable skeleton — closed at an earlier boundary.)
   DEPLOY.md has the steps).
 
 ## Next step (concrete)
+
+**F7 (managed-cloud deploy — Cloud Run + Cloud SQL, ADR-015) is the current frontier — CODE +
+SCAFFOLDING SHIPPED on the desktop (2026-07-02), the live URL lands on the notebook.** The
+next concrete action, on the machine with `gcloud` auth + the Docker/Cloud Build path:
+
+1. **One-time:** `gcloud auth login` → `gcloud config set project <id>` → enable
+   `run` / `sqladmin` / `artifactregistry` / `secretmanager` / `cloudbuild` (DEPLOY.md lists it).
+2. **Deploy:** `PROJECT_ID=<id> REGION=us-central1 bash scripts/deploy_cloudrun.sh` — builds
+   `Dockerfile.hf` via Cloud Build, creates the Cloud SQL Postgres instance + the
+   `DATABASE_URL` secret, rolls a Cloud Run revision wired to the SQL socket.
+3. **Verify:** `curl $URL/health` → `model_loaded:true` (first hit cold-starts + bakes the demo,
+   ~1–2 min); open `$URL/demo`, submit a prediction, confirm it appears in the recent panel
+   (⇒ Cloud SQL logging works end-to-end).
+4. **Record the green:** run the full suite with `[cloud]`+`[serve]` installed (the 13 F7 tests
+   plus the still-pending F4-clean-110 / F5 `[ops]` / F2.8 GPU items), fold into a full green.
+5. **Then, and only then:** paste the `$URL/demo` link into the README (F7 DoD), and flip the
+   **career-system managed-cloud gate** in `PERFIL_TECNICO.md` — *until the URL is live it is in
+   progress, not closed* (Docker builds + a card-on-file GCP billing account are involved).
 
 **F5 (drift monitoring + the auto-retrain loop, ADR-013) is DONE — the marquee shipped
 (2026-07-02, desktop).** The complete production spine now runs end to end: **train → registry

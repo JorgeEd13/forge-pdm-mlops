@@ -819,3 +819,84 @@ bake is **deterministic** (same seed → same probabilities). `retrain.yml` runs
 **The production spine is now not just complete but reachable — a live `/health` a reviewer can
 click.** The bake was verified end-to-end natively (a fresh `ModelStore` over the baked store
 serves a real `/predict`); the container build runs on HF's runners.
+
+## ADR-015 — Managed-cloud deploy: the same image on **Cloud Run** + a **Cloud SQL (Postgres)** prediction log behind an interactive demo, so "operate managed cloud in production" is demonstrated, not just "a container that builds"
+
+**Status.** Accepted (F7). *Code + deploy scaffolding shipped; the live Cloud Run URL +
+green `[cloud]` run land on the notebook (Docker daemon + interactive `gcloud` auth).*
+
+**Context.** F6 put a live `/health` on Hugging Face Spaces — but Spaces is *free-tier
+hosting*, which is deliberately **not** the same claim as operating a **managed cloud
+runtime + a managed resource in production**. That distinction is a real hiring gate:
+"containerize an app" (F4/F6, done) is junior-table-stakes; "deploy and operate it on a
+managed cloud platform with a managed database" is the senior signal that "an image that
+builds" explicitly does **not** cover. F7 closes exactly that gate — and no other. Two
+sub-problems:
+
+1. **Which managed runtime.** A raw VM (e.g. an Oracle/GCE free instance) proves *IaaS* —
+   "I ran a box" — which is closer to self-hosting, the very thing the gate discounts. A
+   *managed container platform* is the direct hit.
+2. **What gives a managed database an honest job.** The F4 serving layer is
+   (correctly) stateless — resolve the model, answer a probability — so a managed DB
+   bolted onto it would be decorative. Without real state to persist, the "managed
+   resource" half of the gate is unconvincing.
+
+**Decision.** Deploy the **same self-contained `Dockerfile.hf` image** (already
+`$PORT`-aware via `scripts/hf_entrypoint.sh`, which bakes the demo registry at startup) to
+**Google Cloud Run** — a *managed, serverless container runtime* (scale-to-zero, revisions,
+managed TLS), not a VM — and pair it with **Cloud SQL for Postgres** as a **managed
+relational resource**. The database earns its keep through a new **interactive demo UI**
+(`GET /demo` + `POST /demo/predict`): a "set the J1939 parameters → get the failure
+probability" page (the click-and-try pattern the receivables-agent showcase already uses),
+and every served demo prediction is **logged to Cloud SQL** and read back into a "recent
+predictions" panel. So the managed resource has a real, visible production job — that is
+what makes it *managed cloud in production* rather than *a managed container*.
+
+**Graceful degrade is a hard invariant, not a nicety.** `store_pg.open_log()` returns
+`None` whenever `DATABASE_URL` is unset — which is **every non-cloud target**: a local
+`pdm serve`, the F6 HF Space, and CI. The demo then runs *without* persistence (the
+prediction still returns; the recent panel is just empty and the page says so). This means
+adding the managed resource **cannot break any existing deploy**, and the offline tests
+never need a server — the exact same `store_pg` code runs against a tmp **SQLite** file in
+tests and against Cloud SQL in production (SQLAlchemy Core over both). A logging failure is
+also swallowed to a no-op: the model already answered, so a transient DB blip never turns a
+successful prediction into a 500.
+
+**The honesty boundary (ADR-001 / ADR-014) is unchanged.** The served model is still the
+fixture-trained **demo** — the `/demo` page carries the same `demo=fixture` banner as
+`/model-info` and the README, and the only reported number remains the ≈0.82 full-data
+local model. **No PII, by construction:** the log stores only the submitted J1939 signal
+values (synthetic sensor floats, restricted to `features.FEATURE_COLUMNS` so a crafted
+request key can't widen the row), the returned probability, the model version, and a UTC
+timestamp — there is no user identity anywhere in the schema.
+
+**No secrets committed.** `scripts/deploy_cloudrun.sh` generates the DB password at deploy
+time, stores the `DATABASE_URL` in **Secret Manager**, and injects it into the service via
+`--set-secrets`; Cloud Run reaches Cloud SQL over the `/cloudsql/<connection>` unix socket
+(`--add-cloudsql-instances`). The repo carries only the parametrized script — no credential.
+
+**Alternatives rejected.**
+- *An Oracle / GCE free VM.* Generous free compute, but it earns the *IaaS* badge, not the
+  *managed* one the gate is about — a VM you patch and babysit reads as self-hosting.
+- *Firestore (serverless NoSQL) as the resource.* Genuinely managed and scale-to-zero, but
+  a document store reads as a weaker "production database" claim than managed Postgres; the
+  prediction log is naturally relational, so Cloud SQL is the honest fit.
+- *A new Cloud-Run-specific Dockerfile.* Unnecessary — `Dockerfile.hf` already honours
+  `$PORT` and bakes the demo at startup, so Cloud Run reuses it as-is. One image, one
+  honest artifact, two hosts (HF + Cloud Run), differing only in platform glue.
+- *Make the demo stateless (skip the DB).* Then the managed-resource half of the gate has
+  nothing to demonstrate — the DB is the point, not an add-on.
+
+**Consequences.** New `src/pdm_mlops/store_pg.py` (the append/read log, graceful-degrade,
+lazy `[cloud]` import) + the `[cloud]` extra (`sqlalchemy` + `psycopg`); `serve.py` gains
+`/demo` (a self-contained inline-CSS/JS page — no CDN, clean-room-safe), `/demo/predict`
+(scores + logs), and an injectable `prediction_log` on `create_app` (defaulting to
+`open_log()`); `scripts/deploy_cloudrun.sh` (Artifact Registry + Cloud Build + Cloud SQL +
+Secret Manager + `gcloud run deploy`); `docs/DEPLOY.md` gains a "Managed cloud: Cloud Run +
+Cloud SQL" section (with a tear-down). Tests: `test_store_pg.py` (8, `[cloud]`-gated:
+round-trip, no-PII key restriction, era-NULL, graceful-degrade on unset/bad URL, best-effort
+on a backend error) + `test_demo.py` (`[serve]`- and `[cloud]`-gated: demo round-trip with
+and without a log, the 503 contract, the honesty banner on the page, persistence + the
+recent-predictions panel). **This closes the managed-cloud gate the F0–F6 spine deliberately
+left open** — the same governed model, now served from a managed runtime with a managed
+resource behind it, at a clickable URL.

@@ -43,10 +43,12 @@ import pandas as pd
 
 from . import config, features
 from . import registry as _registry
+from . import store_pg
 
 # FastAPI/pydantic are the [serve] extra — imported at module load so the app object
 # exists for `pdm serve` and the tests, but kept out of the core dependency set.
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 
@@ -73,6 +75,18 @@ class PredictResponse(BaseModel):
     model_version: str
     n_rows: int
     failure_probability: list[float]
+
+
+class DemoPredictResponse(PredictResponse):
+    """A ``/predict`` result plus whether it was persisted to the managed DB (F7).
+
+    ``persisted`` is ``True`` only when a prediction log is configured (Cloud SQL behind
+    Cloud Run). On a local run / HF Space it is ``False`` — the prediction still returns;
+    it just wasn't logged. The demo page uses it to label the recent-predictions panel
+    honestly ("logging off" vs. a live table).
+    """
+
+    persisted: bool
 
 
 class ModelInfo(BaseModel):
@@ -222,20 +236,31 @@ def _to_frame(rows: list[dict[str, float | None]]) -> pd.DataFrame:
     return X
 
 
-def create_app(store: ModelStore | None = None) -> FastAPI:
+def create_app(
+    store: ModelStore | None = None,
+    prediction_log: store_pg.PredictionLog | None = None,
+) -> FastAPI:
     """Build the serving app, optionally with an injected :class:`ModelStore`.
 
     Tests inject a store bound to a tmp registry; ``pdm serve`` uses the default
     (the local SQLite backend). The model is loaded lazily on first use, so the app
     starts cleanly even with nothing promoted yet.
+
+    ``prediction_log`` is the F7 managed-cloud persistence: the demo UI (:func:`/demo`)
+    appends each served prediction to it and reads the recent ones back. It defaults to
+    :func:`store_pg.open_log`, which returns ``None`` unless ``DATABASE_URL`` is set — so
+    a local ``pdm serve``, the HF Space, and CI all run **without** a database and the
+    demo simply doesn't persist. Tests inject a log bound to a tmp SQLite file.
     """
     store = store or ModelStore()
+    log = prediction_log if prediction_log is not None else store_pg.open_log()
     app = FastAPI(
         title="forge-pdm-mlops serving",
         description="Serves the production-aliased failure classifier (F4).",
         version=config_version(),
     )
     app.state.store = store
+    app.state.prediction_log = log
 
     @app.get("/")
     def root() -> dict[str, object]:
@@ -250,6 +275,7 @@ def create_app(store: ModelStore | None = None) -> FastAPI:
             "The served model is a fixture-trained DEMO (see /model-info); the reported "
             "~0.82 model is trained on the full dataset locally.",
             "endpoints": {
+                "GET /demo": "an interactive 'set parameters → get a prediction' page",
                 "GET /health": "liveness + whether a model is loaded",
                 "GET /model-info": "the live production version + the metric it was gated on",
                 "POST /predict": "score a batch of J1939 readings → per-row failure probability",
@@ -297,21 +323,62 @@ def create_app(store: ModelStore | None = None) -> FastAPI:
             note=note,
         )
 
-    @app.post("/predict", response_model=PredictResponse)
-    def predict(request: PredictRequest) -> PredictResponse:
-        """Score a batch of readings → per-row failure probability."""
+    def _score(readings: list[dict[str, float | None]]) -> tuple[str, list[float]]:
+        """Resolve the production model and score ``readings`` → (version, probabilities).
+
+        The shared core of ``/predict`` and ``/demo/predict``: the model resolution, the
+        frame build + leakage re-check, and the positive-class probabilities. Raises the
+        503 (nothing promoted) so both callers translate it identically.
+        """
         try:
             loaded = store.load()
         except LookupError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        X = _to_frame(request.readings)
+        X = _to_frame(readings)
         proba = loaded.predict_proba(X)
+        return loaded.version, [float(p) for p in proba]
+
+    @app.post("/predict", response_model=PredictResponse)
+    def predict(request: PredictRequest) -> PredictResponse:
+        """Score a batch of readings → per-row failure probability."""
+        version, proba = _score(request.readings)
         return PredictResponse(
-            model_version=loaded.version,
-            n_rows=len(X),
-            failure_probability=[float(p) for p in proba],
+            model_version=version,
+            n_rows=len(proba),
+            failure_probability=proba,
         )
+
+    @app.post("/demo/predict", response_model=DemoPredictResponse)
+    def demo_predict(request: PredictRequest) -> DemoPredictResponse:
+        """Score readings for the demo UI, logging each row to the managed DB (F7).
+
+        The same scoring as ``/predict``, plus: if a prediction log is configured
+        (Cloud SQL behind Cloud Run), each scored row is appended to it. When no
+        ``DATABASE_URL`` is set the log is ``None`` and this is exactly ``/predict`` with
+        a friendlier response shape — the managed resource is a pure enhancement.
+        """
+        version, proba = _score(request.readings)
+        if log is not None:
+            for row, p in zip(request.readings, proba):
+                log.log(model_version=version, failure_probability=p, readings=row)
+        return DemoPredictResponse(
+            model_version=version,
+            n_rows=len(proba),
+            failure_probability=proba,
+            persisted=log is not None,
+        )
+
+    @app.get("/demo", response_class=HTMLResponse)
+    def demo() -> HTMLResponse:
+        """A self-contained 'set parameters → get a prediction' page (F7).
+
+        No CDN, no external asset — inline CSS/JS only (the clean-room/offline
+        discipline). Shows the same ``demo=fixture`` honesty banner the rest of the
+        surface carries, a form seeded with the feature signal names, and the recent
+        predictions read back from the managed DB (empty when none is configured).
+        """
+        recent = log.recent(limit=10) if log is not None else []
+        return HTMLResponse(_render_demo_page(recent, persistence=log is not None))
 
     return app
 
@@ -321,3 +388,184 @@ def config_version() -> str:
     from . import __version__
 
     return __version__
+
+
+# --- the demo page ------------------------------------------------------------
+
+# A neutral, example set of J1939 signal values to seed the form so a first-time
+# visitor can hit "Predict" without knowing the schema. Plausible healthy-ish readings;
+# NOT a fixture row (the demo is about the wiring, not a reported number).
+_DEMO_SEED: dict[str, float] = {
+    "engine_speed_rpm": 1800,
+    "coolant_temp_c": 92,
+    "oil_pressure_kpa": 320,
+    "engine_load_pct": 65,
+    "fuel_rate_lph": 24,
+    "boost_pressure_kpa": 150,
+    "egt_c": 480,
+    "def_level_pct": 55,
+    "vibration_mms": 3.2,
+}
+
+
+def _render_demo_page(
+    recent: list[store_pg.LoggedPrediction], *, persistence: bool
+) -> str:
+    """Render the self-contained demo HTML (inline CSS/JS, no external asset).
+
+    A form seeded with the :data:`features.FEATURE_COLUMNS` signals → a single failure
+    **probability** rendered as a labelled meter (the number carries the meaning; colour
+    is a redundant cue, never the only one). The ``demo=fixture`` honesty banner is shown
+    inline, matching ``/model-info`` and the README. The recent-predictions panel reads
+    from the managed DB (Cloud SQL, F7) when configured, else a short "logging off" note.
+    """
+    import html
+
+    # Form inputs, one per signal, seeded with a neutral example value.
+    fields = "\n".join(
+        f'<label class="field"><span>{html.escape(name)}</span>'
+        f'<input type="number" step="any" name="{html.escape(name)}" '
+        f'value="{_DEMO_SEED.get(name, "")}"></label>'
+        for name in features.FEATURE_COLUMNS
+    )
+
+    # Recent predictions table (server-rendered), or the logging-off note.
+    if persistence:
+        if recent:
+            rows = "\n".join(
+                f"<tr><td>{html.escape(r.created_at.strftime('%Y-%m-%d %H:%M:%S'))} UTC</td>"
+                f"<td>v{html.escape(r.model_version)}</td>"
+                f"<td>{r.failure_probability:.3f}</td></tr>"
+                for r in recent
+            )
+            recent_html = (
+                "<table class='recent'><thead><tr><th>when</th><th>model</th>"
+                f"<th>failure prob.</th></tr></thead><tbody>{rows}</tbody></table>"
+            )
+        else:
+            recent_html = "<p class='muted'>No predictions logged yet — submit one above.</p>"
+        recent_note = "Logged to a managed <strong>Cloud SQL (Postgres)</strong> instance."
+    else:
+        recent_html = ""
+        recent_note = (
+            "Prediction logging is <strong>off</strong> (no <code>DATABASE_URL</code>) — "
+            "the managed-DB panel appears on the Cloud Run deploy."
+        )
+
+    return _DEMO_TEMPLATE.format(
+        fields=fields,
+        recent_html=recent_html,
+        recent_note=recent_note,
+    )
+
+
+# Inline CSS/JS only (clean-room / offline / Artifact-CSP-safe by the same discipline).
+# The JS posts the form to /demo/predict and renders the returned probability as a
+# labelled meter; the number and the risk word are the primary encoding, the bar colour
+# a redundant cue (accessibility: never colour-alone).
+_DEMO_TEMPLATE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge-pdm-mlops — try a prediction</title>
+<style>
+  :root {{ --ink:#1a2233; --muted:#5b6472; --line:#e2e6ec; --surface:#f7f8fa;
+           --accent:#3b5bdb; --demo:#8a5a00; --demo-bg:#fff6e0; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+          color:var(--ink); background:#fff; }}
+  main {{ max-width:820px; margin:0 auto; padding:24px 20px 64px; }}
+  h1 {{ font-size:1.5rem; margin:.2rem 0 .1rem; }}
+  .sub {{ color:var(--muted); margin:0 0 20px; }}
+  .banner {{ background:var(--demo-bg); color:var(--demo); border:1px solid #f0d9a8;
+             border-radius:8px; padding:10px 14px; font-size:.9rem; margin-bottom:22px; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
+           gap:12px; }}
+  .field {{ display:flex; flex-direction:column; gap:4px; font-size:.82rem;
+            color:var(--muted); }}
+  .field input {{ font-size:.95rem; padding:7px 9px; border:1px solid var(--line);
+                  border-radius:6px; color:var(--ink); }}
+  .actions {{ margin:20px 0; display:flex; gap:12px; align-items:center; }}
+  button {{ background:var(--accent); color:#fff; border:0; border-radius:8px;
+            padding:10px 20px; font-size:.95rem; font-weight:600; cursor:pointer; }}
+  button:disabled {{ opacity:.5; cursor:default; }}
+  #result {{ margin-top:8px; }}
+  .meter-wrap {{ display:flex; flex-direction:column; gap:6px; max-width:520px; }}
+  .meter {{ height:14px; background:var(--surface); border:1px solid var(--line);
+            border-radius:7px; overflow:hidden; }}
+  .meter > i {{ display:block; height:100%; border-radius:7px 0 0 7px;
+                transition:width .3s; }}
+  .headline {{ font-size:1.05rem; }}
+  .headline b {{ font-size:1.4rem; }}
+  .muted {{ color:var(--muted); }}
+  section {{ margin-top:34px; }}
+  h2 {{ font-size:1.05rem; }}
+  table.recent {{ width:100%; border-collapse:collapse; font-size:.88rem; }}
+  table.recent th, table.recent td {{ text-align:left; padding:7px 10px;
+    border-bottom:1px solid var(--line); }}
+  table.recent th {{ color:var(--muted); font-weight:600; }}
+  code {{ background:var(--surface); padding:1px 5px; border-radius:4px; }}
+  a {{ color:var(--accent); }}
+</style></head>
+<body><main>
+  <h1>forge-pdm-mlops — try a prediction</h1>
+  <p class="sub">Set the J1939 signal values, get the model's failure probability.</p>
+  <div class="banner"><strong>DEMO model.</strong> The served model is trained on a small
+    committed <em>smoke fixture</em> — its probabilities illustrate the wired endpoint,
+    they are <strong>not</strong> a reported result. The real ≈0.82 ROC-AUC model is trained
+    on the full dataset locally (see <a href="/model-info">/model-info</a>). </div>
+
+  <form id="f">
+    <div class="grid">{fields}</div>
+    <div class="actions">
+      <button type="submit">Predict</button>
+      <span class="muted" id="status"></span>
+    </div>
+  </form>
+  <div id="result"></div>
+
+  <section>
+    <h2>Recent predictions</h2>
+    <p class="muted">{recent_note}</p>
+    {recent_html}
+  </section>
+
+  <script>
+  const form = document.getElementById('f');
+  const result = document.getElementById('result');
+  const statusEl = document.getElementById('status');
+  form.addEventListener('submit', async (e) => {{
+    e.preventDefault();
+    const btn = form.querySelector('button');
+    btn.disabled = true; statusEl.textContent = 'scoring…';
+    const reading = {{}};
+    for (const el of form.querySelectorAll('input')) {{
+      reading[el.name] = el.value === '' ? null : parseFloat(el.value);
+    }}
+    try {{
+      const resp = await fetch('/demo/predict', {{
+        method:'POST', headers:{{'content-type':'application/json'}},
+        body: JSON.stringify({{readings:[reading]}})
+      }});
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const p = data.failure_probability[0];
+      const pct = (p * 100).toFixed(1);
+      // Risk word + colour are a REDUNDANT cue on top of the number (never colour-alone).
+      let word = 'low', col = '#2b8a3e';
+      if (p >= 0.66) {{ word = 'high'; col = '#c92a2a'; }}
+      else if (p >= 0.33) {{ word = 'moderate'; col = '#e8590c'; }}
+      result.innerHTML =
+        '<div class="meter-wrap"><div class="headline">Failure probability: <b>' +
+        pct + '%</b> &nbsp;<span class="muted">(' + word + ' risk · model v' +
+        data.model_version + (data.persisted ? ' · logged' : '') + ')</span></div>' +
+        '<div class="meter"><i style="width:' + pct + '%;background:' + col + '"></i></div></div>';
+      statusEl.textContent = '';
+      if (data.persisted) setTimeout(() => location.reload(), 700);
+    }} catch (err) {{
+      result.innerHTML = '<p class="muted">Prediction failed: ' + err.message +
+        ' (is a model promoted? see <a href="/health">/health</a>)</p>';
+      statusEl.textContent = '';
+    }} finally {{ btn.disabled = false; }}
+  }});
+  </script>
+</main></body></html>"""

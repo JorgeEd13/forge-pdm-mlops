@@ -19,6 +19,7 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F4** | ✅ done | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production`-**aliased** model + Dockerfile + compose (serving + MLflow UI). A promotion/rollback (F3) changes what `/predict` answers with **no redeploy**; probabilities via the native flavor; `TestClient` round-trips a prediction (ADR-009) |
 | **F5** | ✅ done | **Drift monitoring + the auto-retrain loop (marquee)** — `monitor.py` (Evidently `DataDriftPreset` over the feature signals + a **share-threshold** drift decision) + `flows.py` (a Prefect `detect_drift → [if drift] → retrain → promote-or-hold` flow that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade) + the scheduled GH Actions trigger. Runs **in-process** on the fixture; `pdm monitor` / `pdm flow` live (ADR-013) |
 | **F6** | ✅ done | *(stretch)* hosted free-tier deploy (Hugging Face Spaces) → a live `/health` link. A **self-contained** `Dockerfile.hf` **bakes a fixture-trained demo registry** at build time (train → register → promote through the same F3 gate), so a fresh cloud deploy serves a real prediction and `/health` shows `model_loaded=true` — labelled a **demo** everywhere (ADR-001 boundary intact: a fixture model is *served, never reported*). `scripts/seed_demo_registry.py` + `docs/DEPLOY.md`; `retrain.yml` now runs `pdm flow` for real. The ≈0.82 full-data model is what `pdm train` produces locally (ADR-014) |
+| **F7** | ☑ code + scaffolding done *(live URL + `[cloud]` green land on the notebook)* | **Managed-cloud deploy — the managed-cloud gate.** The **same** `Dockerfile.hf` image on **Google Cloud Run** (a *managed* container runtime, not a VM) + **Cloud SQL for Postgres** as a **managed resource**. An interactive **demo UI** (`/demo`: set the J1939 parameters → get the probability) gives the DB an honest job — every served prediction is **logged to Cloud SQL** and read back into a recent-predictions panel. **Graceful degrade:** no `DATABASE_URL` ⇒ no persistence, so local/HF/CI are unaffected; the same `store_pg` code runs on tmp SQLite in tests. No PII, no committed secrets (Secret Manager). The `demo=fixture` honesty boundary intact. Closes the gate F0–F6 left open: *containerize ≠ operate managed cloud* (ADR-015) |
 
 ---
 
@@ -299,3 +300,34 @@ below in full so the judgment (and the scoping) is on the record.
   container build runs on HF's runners); `test_seed_demo_registry.py` (4, offline) asserts the
   promote/serve/self-contained/deterministic behaviour; `docs/DEPLOY.md` documents the reachable
   `/health` and the README carries the link once the Space is pushed. **ADR-014.**
+
+## F7 — Managed-cloud deploy (Cloud Run + Cloud SQL) — the managed-cloud gate
+
+- **Objective.** Close the one gate F0–F6 deliberately left open: **operate a managed cloud
+  runtime with a managed resource in production**. HF Spaces (F6) is *free hosting* —
+  "containerize an app", table stakes. F7 is the senior claim: a **managed container platform**
+  (Cloud Run — serverless, scale-to-zero, revisions, managed TLS) plus a **managed relational
+  database** (Cloud SQL for Postgres). "An image that builds" explicitly does **not** cover this.
+- **How.** Deploy the **same self-contained `Dockerfile.hf`** (already `$PORT`-aware — the
+  entrypoint reads `${PORT:-8000}`, and Cloud Run injects `$PORT`) to Cloud Run via Cloud Build
+  (no local Docker daemon). Give the managed DB an honest job with an interactive **demo UI**:
+  `GET /demo` (a self-contained inline-CSS/JS "set parameters → get the failure probability" page,
+  the click-and-try pattern) + `POST /demo/predict` (scores **and** logs each row to Cloud SQL);
+  the page reads the recent predictions back. New `src/pdm_mlops/store_pg.py` (SQLAlchemy Core
+  append/read log) + the `[cloud]` extra; `scripts/deploy_cloudrun.sh` (Artifact Registry + Cloud
+  Build + Cloud SQL + Secret Manager + `gcloud run deploy`). **ADR-015.**
+- **Hard invariants.** **Graceful degrade** — `store_pg.open_log()` returns `None` when
+  `DATABASE_URL` is unset (local / HF / CI), so the demo runs without persistence and **nothing
+  about serving depends on the DB**; the SAME code runs on tmp SQLite in tests and Cloud SQL in
+  prod. **No PII** — the log stores only the synthetic J1939 signal values (restricted to
+  `FEATURE_COLUMNS`), the probability, the model version, a UTC timestamp; no user identity.
+  **No committed secrets** — the password is generated at deploy and lives in Secret Manager.
+  **Honesty boundary intact** — the served model is still the `demo=fixture` model, banner on the
+  `/demo` page; the only reported number is the ≈0.82 full-data local model.
+- **DoD.** The `/demo` page renders with the honesty banner and every signal field; `/demo/predict`
+  round-trips exactly like `/predict` (and 503s the same when nothing is promoted); with a log
+  injected the served rows **persist** and surface on the page; with no log the demo still works
+  and says so. `test_store_pg.py` (8, `[cloud]`-gated) + `test_demo.py` (`[serve]`+`[cloud]`-gated)
+  green offline. **Lands on the notebook:** the live Cloud Run URL + Cloud SQL instance + the
+  `[cloud]`/`[serve]` green run (needs the Docker/Cloud Build path + interactive `gcloud` auth);
+  then the README carries the `/demo` link. **ADR-015.**

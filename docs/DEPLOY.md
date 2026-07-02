@@ -101,6 +101,56 @@ loud if the fixture is still a pointer. The bake itself (train + promote on the 
 verified end-to-end natively: a fresh serving process over the baked store returns
 `model_loaded=true`, a real `/predict` probability, and `/model-info`.
 
+## Managed cloud: Google Cloud Run + Cloud SQL (F7 — the managed-cloud gate)
+
+HF Spaces (above) is *free-tier hosting*; **F7** is the stronger, separate claim — operating
+a **managed cloud runtime** (Cloud Run) with a **managed resource** (Cloud SQL for Postgres)
+in production. It runs the **same** `Dockerfile.hf` image (already `$PORT`-aware via
+`hf_entrypoint.sh`, which bakes the demo registry at startup), adds an interactive
+**demo UI** (`/demo`), and **logs each served prediction to Cloud SQL** — the state that
+gives the managed database an honest job. See ADR-015 for the rationale.
+
+**The demo UI.** `GET /demo` is a self-contained "set the J1939 parameters → get the failure
+probability" page (same `demo=fixture` honesty banner as `/model-info`); `POST /demo/predict`
+scores *and* logs. The log stores only the synthetic signal values + the probability + the
+model version + a UTC timestamp — **no PII**. When `DATABASE_URL` is unset (local, HF, CI)
+the demo degrades gracefully to **no persistence** — nothing about serving depends on the DB.
+
+**One-time setup** (interactive, on the machine with your `gcloud` auth):
+
+```bash
+gcloud auth login
+gcloud config set project "$PROJECT_ID"
+gcloud services enable run.googleapis.com sqladmin.googleapis.com \
+    artifactregistry.googleapis.com secretmanager.googleapis.com cloudbuild.googleapis.com
+```
+
+**Deploy** (builds the image via Cloud Build — no local Docker daemon needed, creates the
+SQL instance + secret if missing, rolls a Cloud Run revision):
+
+```bash
+PROJECT_ID=my-proj REGION=us-central1 bash scripts/deploy_cloudrun.sh
+```
+
+The script generates the DB password at deploy time and stores the `DATABASE_URL` in
+**Secret Manager** (never printed, never committed); Cloud Run reaches Cloud SQL over the
+`/cloudsql/<connection>` unix socket. When it finishes it prints the service URL; verify:
+
+```bash
+curl -s "$URL/health"     # first hit cold-starts + bakes the demo (~1–2 min)
+# {"status":"ok","model_loaded":true,"model_version":"1"}
+# then open  $URL/demo  in a browser — submit a prediction; it appears in the recent panel.
+```
+
+Put the `$URL/demo` link in the README (the F7 DoD), alongside the F6 `/health` badge.
+
+**Tear down** (stop all billing):
+
+```bash
+gcloud run services delete forge-pdm-mlops --region "$REGION"
+gcloud sql instances delete forge-pdm-pg
+```
+
 ## Alternatives (same image, different host)
 
 - **Render** — a free Docker web service; set the Dockerfile path to `Dockerfile.hf` and the
@@ -108,4 +158,6 @@ verified end-to-end natively: a fresh serving process over the baked store retur
 - **Fly.io** — `fly launch --dockerfile Dockerfile.hf`; scale-to-zero free allowance (needs a
   card on file). Most "real infra" flavour.
 
-All three serve the same self-contained image; only the platform glue differs.
+The HF, Cloud Run, Render, and Fly.io targets all serve the same self-contained image; only
+the platform glue differs. Cloud Run is the one that also closes the **managed-cloud** gate
+(a managed runtime + Cloud SQL), which the others — free hosting — do not.

@@ -57,6 +57,12 @@ tune = ["optuna>=3.4", "matplotlib>=3.7"]
 # without it via the cheap multivariate + temporal rungs (ADR-005). CPU build only;
 # no GPU/CUDA on the production desktop.
 deep = ["torch>=2.0"]
+# Managed-cloud prediction log (F7): the demo UI's persistence on Cloud SQL for Postgres
+# behind Cloud Run (ADR-015). SQLAlchemy Core + the psycopg 3 driver; the SAME code runs
+# against a local SQLite file in tests. Kept OUT of core CI and every non-cloud deploy —
+# the demo degrades gracefully to no persistence when DATABASE_URL is unset (store_pg.py),
+# so nothing here is a hard dependency of serving.
+cloud = ["sqlalchemy>=2.0", "psycopg[binary]>=3.1"]
 # Live data regeneration (D1): import the companion generator to produce the FULL
 # training dataset from configs/dataset.json + a seed, and to move the `season`
 # drift knob. The version is PINNED so desktop and notebook regenerate
