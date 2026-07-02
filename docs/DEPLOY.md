@@ -82,15 +82,24 @@ store path in only one place.
 ```bash
 docker build -f Dockerfile.hf -t forge-pdm-mlops:hf .
 docker run --rm -p 8000:8000 forge-pdm-mlops:hf &
+# The demo model is baked at STARTUP (scripts/hf_entrypoint.sh), so give it ~1–2 min
+# on first boot (it trains the two contenders on the fixture and promotes the winner)
+# before the first request:
+sleep 90
 curl -s localhost:8000/health      # {"status":"ok","model_loaded":true,"model_version":"1"}
 curl -s -X POST localhost:8000/predict \
   -H 'content-type: application/json' \
   -d '{"readings":[{"coolant_temp_c":95,"engine_load_pct":80}]}'
 ```
 
-The seed step (train + promote on the fixture) has been verified end-to-end natively:
-a fresh serving process reading the baked store returns `model_loaded=true`, a real
-`/predict` probability, and `/model-info`.
+**Why the bake runs at startup, not at build.** MLflow writes **absolute** artifact paths
+into the registry DB, and on HF the fixture is an LFS object only smudged into a real file
+in the running container — so a build-time bake can promote a model whose artifacts the
+runtime user (UID 1000) can't resolve, and `/health` then reports `model_loaded=false`. The
+entrypoint bakes as the runtime user, at the runtime path, after LFS smudge — and fails
+loud if the fixture is still a pointer. The bake itself (train + promote on the fixture) is
+verified end-to-end natively: a fresh serving process over the baked store returns
+`model_loaded=true`, a real `/predict` probability, and `/model-info`.
 
 ## Alternatives (same image, different host)
 

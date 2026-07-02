@@ -42,21 +42,25 @@ COPY configs ./configs
 COPY data ./data
 COPY scripts ./scripts
 
-# The baked registry lives at a FIXED path. It MUST be the same at build and run time:
+# The baked registry lives at a FIXED path. It MUST be the same at bake and serve time:
 # MLflow stores artifact locations as absolute paths in the tracking DB, so serving only
 # resolves them if the path is unchanged. `/mlflow` is that fixed contract.
 ENV MLFLOW_STORE_DIR=/mlflow
 ENV MLFLOW_TRACKING_URI="sqlite:////mlflow/mlflow.db"
 
-# Bake the demo registry (train on the fixture → register → promote to `production`).
-# Owned by appuser so the runtime user can read it (and MLflow can touch the DB).
+# Prepare the store dir owned by the runtime user; the bake itself happens at STARTUP
+# (hf_entrypoint.sh), not here. Baking at startup — as appuser, at the runtime path,
+# after HF has smudged the LFS-stored fixture into a real file — sidesteps two
+# container-only failure modes a build-time bake hit: an artifact path created by root
+# then served by appuser, and a fixture that is only a real file at run time. See the
+# entrypoint script for the rationale.
 RUN mkdir -p /mlflow \
-    && python scripts/seed_demo_registry.py --store-dir /mlflow \
-    && chown -R appuser:appuser /mlflow /app
+    && chown -R appuser:appuser /mlflow /app \
+    && chmod +x scripts/hf_entrypoint.sh
 
 USER appuser
 
 # HF Spaces expects the app on the port declared as `app_port` in the Space README
 # (8000). 0.0.0.0 so it is reachable from outside the container.
 EXPOSE 8000
-CMD ["pdm", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bash", "scripts/hf_entrypoint.sh"]
