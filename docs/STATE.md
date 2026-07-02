@@ -1,8 +1,26 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-02 (F7 code + scaffolding)
+Updated: 2026-07-02 (notebook session: full green suite + F2.8 measured)
 
 ## Current focus
+
+**Notebook session 2026-07-02 (verification/recording, not a new phase).** On the notebook
+(`[ops]`+`[cloud]` installed, torch 2.12+cu130, RTX 4050): **(1)** full suite **133/137 green**
+— all F4 serve, F7 store_pg/demo, F2.8 ceiling, F2.7 TCN pass, so the long-pending **F4
+clean-run is recorded**; the **4 reds are all F5 drift** (`test_monitor`×2, `test_flows`×2) from
+a real bug (below). **(2) F2.8 measured on full data** — the ceiling thesis is **refuted** (see
+the F2.8 block). **Deferred to a next session (per Jorge):** fix the F5 drift bug, then the F7
+live Cloud Run deploy (needs interactive `gcloud` auth + billing).
+
+> **F5 drift bug (found on first-ever real `[ops]` run — these tests always skipped before).**
+> `monitor.detect_drift` declares drift when the *share* of drifted features ≥
+> `DRIFT_SHARE_THRESHOLD = 0.5`. The F5 test shifts **4** thermal signals; `FEATURE_COLUMNS`
+> grew to **9** when `vibration_mms` was added in the 0.2.0 refresh, so share = 4/9 = **0.44 <
+> 0.5** → `drifted=False`, but the tests assert `True` (worked at 4/8 = 0.5 before the feature
+> was added). NOT an evidently-version issue — evidently 0.6.7 flags exactly the 4 shifted cols.
+> Fix next session (ADR-013 policy call): lower the threshold, or make the synthetic shift
+> mirror the real `season='heatwave'` breadth (≥5/9). A clean "tests that never run hide
+> arithmetic" finding.
 
 **F7 (Managed-cloud deploy — Cloud Run + Cloud SQL — the managed-cloud gate) — CODE +
 SCAFFOLDING SHIPPED on the desktop (2026-07-02, ADR-015); the live Cloud Run URL + the
@@ -219,12 +237,34 @@ superseded. New `registry.py`:
   tolerance / `--force` bypass / loud errors on malformed input / `latest_version` / alias-unset.
   **100 tests green offline** (86 + 14). **ADR-008.**
 
-**F2.8 (Characterize the ceiling — is the limit the data or the model?) — BUILT, offline-tested
-(full-data numbers pending a GPU `pdm ceiling` run). The capstone that closes the F2.* arc.**
-The honest close of the F2.5→F2.7 investigation: stop *asserting* "0.82 is the data's
-information limit" and **measure** it. New `ceiling.py`, three instruments, all on the **exact
-F1 unit split / seed / test rows** and all **label-honest** (labels read only to grade/bound,
-never as an honest feature — the ADR-003 / `detect_score` discipline):
+**F2.8 (Characterize the ceiling — is the limit the data or the model?) — MEASURED on the full
+data (GPU notebook, 2026-07-02, seed 42). The capstone that closes the F2.* arc — and it
+HONESTLY REFUTES its own thesis.** The honest close of the F2.5→F2.7 investigation: stop
+*asserting* "0.82 is the data's information limit" and **measure** it. New `ceiling.py`, three
+instruments, all on the **exact F1 unit split / seed / test rows** and all **label-honest**
+(labels read only to grade/bound, never as an honest feature — the ADR-003 / `detect_score`
+discipline). **Measured full-data result:**
+
+| instrument | result |
+|---|---|
+| overall (per-row honest) | **0.8125** |
+| decomposition by TTF horizon | [0,6) h **0.9183** · [6,24) **0.9290** · [24,72) **0.9264** · [72,168) **0.7162** · [168,∞) 0.5555 (pos=17) |
+| decomposition by failure mode | bearing **0.8732** · oil_starve **0.7959** · overheat **0.7720** |
+| upper-bound (FENCED, leaks failure_mode + TTF) | 1.0000 → gap over honest **+0.1875** |
+| stacking probe — two-rung (GBDT) | best base temporal 0.8194 → **stack 0.8267 (+0.0073)** |
+| stacking probe — three-rung (+TCN) | TCN 0.7979 → **stack 0.8257 (+0.0063)** |
+
+**VERDICT (robust across two-/three-rung): `ceiling_is_data = False`.** The stack beats its best
+base member by ~+0.006–0.007 → the rungs are **NOT fully redundant** → the "0.82 is purely the
+data's ceiling" thesis is **not confirmed**. The instrument built to confirm the ceiling-is-data
+hypothesis partially refuted it: a modest but consistent combinable signal remains (magnitude on
+par with the +0.0069 F2.7 called "temporal helps" — so calling *this* noise would be inconsistent).
+Honest caveat: a single deterministic OOF LogisticRegression meta-learner, no confidence interval;
+it is a **probe, not a product** (never shipped as the model). The decomposition shape is exactly
+as theorized — sharp near failure (~0.92–0.93 within 72 h), fading far out (0.72 at [72,168), and
+the [168,∞) band is healthy-and-unpredictable by construction, only 17 positives).
+
+The three instruments (all on the exact F1 split, all label-honest):
 
 1. **Decomposition** (`decompose`) — the honest per-row held-out AUC sliced by **time-to-failure
    horizon** (`[0,6)…[168,∞) h`) and by **failure mode**; each band's positives vs. all healthy
@@ -238,18 +278,23 @@ never as an honest feature — the ADR-003 / `detect_score` discipline):
    `_assert_honest_frame` (a `LEAK_FEATURES` guard *on top of* `assert_no_leakage`, so even the
    non-target `time_to_failure_h` can't reach the honest path); the fence is asserted by test.
 3. **Stacking redundancy probe** (`stacking_probe`) — an **OOF unit-grouped** (`GroupKFold`)
-   LogisticRegression meta-learner over the base rungs. Can't beat its best base member ⇒ rungs
-   are information-redundant ⇒ **the ceiling is the data, confirmed** (reported either way). A
-   probe, **not a product** — a within-noise bump would only muddy the clean F2.7 finding.
+   LogisticRegression meta-learner over the base rungs. If it can't beat its best base member ⇒
+   rungs are information-redundant ⇒ ceiling is the data; **measured, it DID beat the best base**
+   (+0.0073 two-rung / +0.0063 three-rung) ⇒ rungs are **not** fully redundant. A probe, **not a
+   product** — reported honestly either way.
 
-**Compute / the TCN seam.** CPU-only on the low-end desktop (the two base rungs are the cheap
-F2.7 LightGBM frames). The F2.7 **TCN** needs the GPU, so the probe takes its predictions
-through `extra_oof={name: (oof_train, proba_test)}` — a notebook run folds the TCN's OOF in
-**without a rewrite** (alignment asserted). Since F2.7 measured the TCN *below* rung (b), the
-probe's **verdict** is already decidable from the two GBDT rungs; the TCN-included number is an
-optional refinement. `pdm ceiling` runs it live; new `ceiling.py` + **13 tests** (offline,
-deterministic). **ADR-010.** *(On the tiny fixture the numbers are artifacts — the reported
-full-data decomposition/probe land on a GPU `pdm ceiling` run, recorded here at that boundary.)*
+**Compute / the TCN seam — folded in (2026-07-02).** The two base rungs are the cheap F2.7
+LightGBM frames (CPU). The F2.7 **TCN** OOF was produced on the notebook GPU (5-fold unit-grouped
+GroupKFold matching `_oof_predictions`, + a full-train fit for the test column) and folded through
+`extra_oof={name: (oof_train, proba_test)}` **without a rewrite** (alignment asserted, 0 NaN OOF
+rows). The three-rung verdict matches the two-rung one (TCN is the weakest rung, 0.7979 < temporal
+0.8194, so it *slightly lowers* the stack, 0.8267→0.8257, but the margin stays positive). **TCN
+cross-version determinism note:** the same-geometry TCN (32 ch · 4 layers · window 24 · 12 epochs)
+reproduces at **0.7979** on this notebook (torch 2.12.0+cu130), vs the **0.8148** ADR-007 recorded
+on the earlier build — a *cross-CUDA-version* numerics gap (`use_deterministic_algorithms` pins
+within-version reproducibility, not across cuDNN/CUDA builds; more epochs, 8→12, did **not** close
+it, so it is not under-training). It does not affect the verdict. `pdm ceiling` runs the two-rung
+version live; new `ceiling.py` + **13 tests** (offline, deterministic). **ADR-010.**
 
 **F2.7 (Temporal modelling — does the trajectory help?) — DONE.** The honest follow-on to
 the F2.6 HPO-null finding: if tuning is exhausted because the ceiling is a *representation*
@@ -539,8 +584,15 @@ runnable skeleton — closed at an earlier boundary.)
   on `time_to_failure_h` and on target/label columns — determinism, the stacking seam folds in
   / rejects misaligned extra OOF). Offline, deterministic. **86 total green offline** (73 +
   13). **ADR-010.**
-- **Pending:** the reported full-data numbers land on a GPU `pdm ceiling` run (fixture numbers
-  are artifacts).
+- **MEASURED (GPU notebook, 2026-07-02, seed 42, 3.47M rows).** `pdm ceiling` (two-rung) +
+  a TCN-OOF fold via the `extra_oof` seam. Overall per-row **0.8125**; decomposition sharp
+  near failure (0.92–0.93 within 72 h) fading far out; upper-bound (fenced) 1.0000, gap
+  **+0.1875**. **Stacking probe: stack 0.8267 (+0.0073) two-rung / 0.8257 (+0.0063) three-rung
+  → `ceiling_is_data = False`.** The thesis is **refuted**: the rungs are not fully redundant,
+  ~+0.006–0.007 combinable signal remains (probe, not product). TCN reproduces at 0.7979 here
+  (torch 2.12+cu130) vs ADR-007's 0.8148 — a cross-CUDA-version numerics gap, not under-training
+  (8→12 epochs did not close it); it is the weakest rung and does not change the verdict. See
+  the F2.8 "Current focus" block for the full table.
 
 ### F3 — Registry + gated promotion + rollback (2026-07-01)
 
@@ -652,8 +704,9 @@ next concrete action, on the machine with `gcloud` auth + the Docker/Cloud Build
 3. **Verify:** `curl $URL/health` → `model_loaded:true` (first hit cold-starts + bakes the demo,
    ~1–2 min); open `$URL/demo`, submit a prediction, confirm it appears in the recent panel
    (⇒ Cloud SQL logging works end-to-end).
-4. **Record the green:** run the full suite with `[cloud]`+`[serve]` installed (the 13 F7 tests
-   plus the still-pending F4-clean-110 / F5 `[ops]` / F2.8 GPU items), fold into a full green.
+4. **Record the green:** DONE on the notebook 2026-07-02 for F4/F7/F2.8 — full suite **133/137**
+   (all F4 serve + 13 F7 `[cloud]` + F2.8 ceiling pass). The **4 F5 drift reds** (share-threshold
+   arithmetic bug, see the top block) must be fixed before the suite is fully green.
 5. **Then, and only then:** paste the `$URL/demo` link into the README (F7 DoD), and flip the
    **career-system managed-cloud gate** in `PERFIL_TECNICO.md` — *until the URL is live it is in
    progress, not closed* (Docker builds + a card-on-file GCP billing account are involved).
@@ -678,9 +731,9 @@ record their green. Two *separate* notebook-side items are still pending from be
 When pulling the desktop branch at home, fold those results in — they touch different STATE
 lines (F4/F2.8) than F5, so the merge is additive.
 
-**Still outstanding on F2.8 (not a blocker):** a **GPU `pdm ceiling` run on the full dataset** to
-record the reported decomposition / upper-bound / probe numbers (the fixture numbers are
-artifacts). Optionally fold the F2.7 TCN's OOF into the probe via the `extra_oof` seam.
+**F2.8 — DONE (measured, 2026-07-02).** The GPU full-data `pdm ceiling` run + the TCN-OOF fold
+are recorded above: the thesis is **refuted** (`ceiling_is_data = False`, stack beats best base
+by +0.0073/+0.0063). Nothing outstanding on F2.8.
 
 **F2.9 (RUL / graded label, ADR-011) and F2.10 (C-MAPSS, ADR-012) — FUTURE WORK, DEFERRED BY
 DESIGN (2026-06-27, career-wide decision).** Both are scoped in full in `ROADMAP.md` but

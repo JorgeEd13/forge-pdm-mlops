@@ -608,7 +608,7 @@ retrain loop will exercise exactly this serving surface after it promotes.
 
 ## ADR-010 — Characterize the ceiling: measure that 0.82 is the *data's* information limit — decomposition + a fenced label-leaking upper-bound + an OOF stacking redundancy probe
 
-**Date:** 2026-07-01 · **Phase:** F2.8 · **Status:** **accepted — built and offline-tested; the reported full-data numbers land on a GPU/full-data run** (the CPU rungs and both verdicts are decidable on this hardware; the TCN's contribution enters through a seam)
+**Date:** 2026-07-01 (measured 2026-07-02) · **Phase:** F2.8 · **Status:** **accepted — MEASURED on the full data (GPU notebook). The thesis is REFUTED: the stacking probe beats its best base member (+0.0073 two-rung / +0.0063 three-rung), so the rungs are NOT fully redundant and "0.82 is purely the data's ceiling" is not confirmed. Kept honestly — see Measured outcome below.**
 
 **Context.** Three sub-phases converged on the same claim: F2.6 (tuning is inert, +0.003),
 F2.7 (temporal helps a little, +0.007; deep does not earn its place; tuning the deep does not
@@ -647,9 +647,9 @@ here *only to grade or to bound*, never as an honest model input (the ADR-003 gu
    OOF train predictions (no base model's in-sample fit leaks into the meta score, no unit
    crosses a fold), evaluated on the shared test rows against base models refit on all train
    rows. **If the stack can't beat its best base member, the rungs are information-redundant →
-   the ceiling is the data, confirmed.** Reported either way. Stacking lives here **as a probe,
-   not a product** — a within-noise bump on the binary task would only muddy the clean F2.7
-   finding, so it is deliberately not promoted to a shipped model.
+   the ceiling is the data.** Reported either way — and *measured, it DID beat the best base*
+   (see Measured outcome), so the rungs are **not** fully redundant. Stacking lives here **as a
+   probe, not a product** — it is deliberately not promoted to a shipped model.
 
 **The TCN seam (compute honesty).** Everything above is CPU-only on the low-end desktop (the
 two base rungs are the cheap F2.7 LightGBM frames). The F2.7 **TCN** rung needs the GPU, so the
@@ -658,7 +658,24 @@ run folds the TCN's out-of-fold column in **without a rewrite**, alignment asser
 F2.7 already measured the TCN *below* rung (b), the probe's **verdict** (redundant vs. not) is
 already decidable from the two GBDT rungs; the TCN-included number is an optional refinement,
 not a blocker. This is the same "tested path = CPU/fixture; reported number = GPU/full data"
-discipline as ADR-007.
+discipline as ADR-007. *(Measured: the TCN OOF was in fact folded in — the three-rung verdict
+matches the two-rung one.)*
+
+**Measured outcome (2026-07-02, GPU notebook, seed 42, 3.47M rows).** Overall per-row honest
+**0.8125**. Decomposition: sharp near failure — [0,6) h **0.9183**, [6,24) **0.9290**, [24,72)
+**0.9264** — fading far out — [72,168) **0.7162**, [168,∞) 0.5555 (only 17 positives); by mode
+bearing **0.8732** / oil_starve 0.7959 / overheat 0.7720. Fenced upper-bound 1.0000 → gap over
+honest **+0.1875**. **Stacking probe: best base = lightgbm_temporal 0.8194; stack 0.8267
+(+0.0073) two-rung, 0.8257 (+0.0063) three-rung with the TCN OOF folded in → `ceiling_is_data =
+False` in both.** So the capstone **refutes** its own hypothesis: a modest but consistent
+~+0.006–0.007 combinable signal remains between the per-row and temporal rungs (magnitude on par
+with the +0.0069 F2.7 called "temporal helps", so it is not dismissible as noise; caveat: single
+deterministic OOF meta-learner, no CI). The honest reading is *"the ≈0.82 aggregate is
+data-dominated, but the rungs are not perfectly redundant — a little combinable signal is left,
+and the instrument was built precisely so this could be discovered rather than assumed."* TCN
+footnote: the same-geometry rung reproduces at **0.7979** here (torch 2.12+cu130) vs ADR-007's
+0.8148 — a cross-CUDA-version numerics gap (deterministic *within* a build, not across; 8→12
+epochs did not close it), and the TCN is the weakest rung so it does not change the verdict.
 
 **Why.** The honest close of a "is the model the bottleneck?" investigation is a *measurement*
 that the bottleneck is the data, not one more assertion. The decomposition shows **where**
@@ -674,8 +691,8 @@ base frames are leak-free & on the exact F1 split, the decomposition covers hori
 upper-bound bounds & is fenced — the fence fires — determinism, the stacking seam folds/rejects
 extra OOF). No new dependency (LogisticRegression/GroupKFold are already in). **F2.8 closes the
 F2.* modelling arc; the next build is F3 (registry + gated promotion, ADR-008) — the MLOps
-spine the repo exists to finish.** The full-data decomposition/probe numbers are produced by a
-`pdm ceiling` run on the GPU/full dataset and recorded in STATE at that boundary.
+spine the repo exists to finish.** The full-data decomposition/probe numbers were produced by a
+`pdm ceiling` run on the GPU/full dataset (2026-07-02) and are recorded above + in STATE.
 
 ---
 
