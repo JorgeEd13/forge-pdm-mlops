@@ -118,16 +118,49 @@ def main() -> None:
         "In Docker this MUST equal the run-time path (absolute artifact URIs are baked).",
     )
     parser.add_argument("--seed", type=int, default=DEMO_SEED, help="class-rich fixture seed")
+    parser.add_argument(
+        "--skip-if-promoted",
+        action="store_true",
+        help="no-op (exit 0) if a production model is already promoted in the store — for "
+        "an idempotent container startup bake (a warm restart shouldn't retrain).",
+    )
     args = parser.parse_args()
 
     # The fixture-fallback UserWarning is expected here (we deliberately train on it).
     warnings.simplefilter("ignore")
-    version = seed_registry(args.store_dir.resolve(), seed=args.seed)
+    store = args.store_dir.resolve()
+
+    if args.skip_if_promoted and _already_promoted(store):
+        print(
+            f"Production model already promoted in {store} "
+            f"('{registry.PRODUCTION_ALIAS}' alias set) — skipping bake."
+        )
+        return
+
+    version = seed_registry(store, seed=args.seed)
     print(
-        f"Baked demo registry at {args.store_dir} — "
+        f"Baked demo registry at {store} — "
         f"'{config.REGISTERED_MODEL_NAME}' v{version} promoted to "
         f"'{registry.PRODUCTION_ALIAS}' (fixture-trained demo model)."
     )
+
+
+def _already_promoted(store_dir: Path) -> bool:
+    """True if a production-aliased model already exists in the store at ``store_dir``.
+
+    Checked via the alias (not just the DB file's presence), so a leftover empty DB from a
+    previous image doesn't count as "already baked". Any error (no DB, no model) → False,
+    i.e. we should bake.
+    """
+    db = store_dir / "mlflow.db"
+    if not db.exists():
+        return False
+    try:
+        uri = config.sqlite_tracking_uri(db)
+        client = registry._client(uri)
+        return registry.production_version(client, config.REGISTERED_MODEL_NAME) is not None
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":

@@ -48,6 +48,12 @@ COPY scripts ./scripts
 ENV MLFLOW_STORE_DIR=/mlflow
 ENV MLFLOW_TRACKING_URI="sqlite:////mlflow/mlflow.db"
 
+# Cache-bust: bump this integer to force HF to rebuild the final layers (the entrypoint
+# CMD) instead of serving a stale fully-cached image. HF caches layers aggressively; a
+# CMD change alone was reused from cache on the first attempt. Bumping an ARG here
+# invalidates everything below it.
+ARG CACHE_BUST=2
+
 # Prepare the store dir owned by the runtime user; the bake itself happens at STARTUP
 # (hf_entrypoint.sh), not here. Baking at startup — as appuser, at the runtime path,
 # after HF has smudged the LFS-stored fixture into a real file — sidesteps two

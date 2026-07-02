@@ -12,8 +12,9 @@
 # persisted store), skip the bake and serve immediately.
 set -euo pipefail
 
+echo "[entrypoint] ==== forge-pdm-mlops HF entrypoint starting ===="
+
 STORE_DIR="${MLFLOW_STORE_DIR:-/mlflow}"
-DB="${STORE_DIR}/mlflow.db"
 FIXTURE="data/sample_readings.parquet"
 
 # Guard: on HF the fixture is an LFS object. If it wasn't smudged into a real file, it is
@@ -24,14 +25,15 @@ if head -c 64 "${FIXTURE}" 2>/dev/null | grep -q "git-lfs"; then
   echo "[entrypoint] parquet. The demo bake needs the real file. (Check LFS on the Space.)" >&2
   exit 1
 fi
+echo "[entrypoint] fixture is a real file — OK."
 
-if [ ! -f "${DB}" ]; then
-  echo "[entrypoint] no registry at ${DB} — baking the demo model (trains on the fixture)…"
-  python scripts/seed_demo_registry.py --store-dir "${STORE_DIR}"
-  echo "[entrypoint] bake done."
-else
-  echo "[entrypoint] registry present at ${DB} — skipping bake."
-fi
+# (Re)bake the demo model unless a production model is ALREADY promoted in this store
+# (checked via the alias, not just the DB file — a leftover empty DB must not make us skip).
+# seed_demo_registry --skip-if-promoted is idempotent: it retrains only when needed.
+echo "[entrypoint] ensuring a promoted demo model in ${STORE_DIR}…"
+mkdir -p "${STORE_DIR}"
+python scripts/seed_demo_registry.py --store-dir "${STORE_DIR}" --skip-if-promoted
+echo "[entrypoint] demo model ready."
 
 echo "[entrypoint] starting serving on :${PORT:-8000}"
 exec pdm serve --host 0.0.0.0 --port "${PORT:-8000}"
