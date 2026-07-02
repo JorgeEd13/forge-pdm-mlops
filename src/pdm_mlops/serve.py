@@ -76,12 +76,21 @@ class PredictResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """The live production model's identity — for auditable serving."""
+    """The live production model's identity — for auditable serving.
+
+    ``demo`` / ``note`` exist so the endpoint is **self-labelling**: when the served model
+    is the fixture-trained demo (the hosted deploy, F6/ADR-014), ``metric_value`` is scored
+    on the tiny smoke fixture and is therefore *not* a reported result (it reads high by
+    construction — a 20-unit hold-out). The flag + note say so inline, so nobody reads the
+    number out of context. On a full-data model these are ``False`` / a plain note.
+    """
 
     registered_model: str
     production_version: str
     primary_metric: str
     metric_value: float
+    demo: bool
+    note: str
 
 
 # --- the cached production model ---------------------------------------------
@@ -268,11 +277,24 @@ def create_app(store: ModelStore | None = None) -> FastAPI:
         metric = _registry.version_metric(
             client, config.REGISTERED_MODEL_NAME, loaded.version
         )
+        # Is this the fixture-trained demo? The seed script (F6) tags the version
+        # `demo=fixture`; a full-data model registered by `pdm train` has no such tag.
+        version_obj = client.get_model_version(config.REGISTERED_MODEL_NAME, loaded.version)
+        is_demo = version_obj.tags.get("demo") == "fixture"
+        note = (
+            "DEMO model, trained on the committed smoke fixture — this metric is scored on "
+            "a tiny hold-out and reads HIGH by construction; it is NOT a reported result "
+            "(see ADR-001). The reported ~0.82 ROC-AUC is the full-data model trained locally."
+            if is_demo
+            else "Full-data model."
+        )
         return ModelInfo(
             registered_model=config.REGISTERED_MODEL_NAME,
             production_version=loaded.version,
             primary_metric=config.PRIMARY_METRIC,
             metric_value=metric,
+            demo=is_demo,
+            note=note,
         )
 
     @app.post("/predict", response_model=PredictResponse)

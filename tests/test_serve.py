@@ -146,6 +146,24 @@ def test_model_info_exposes_the_production_version(tmp_tracking, fixture_reading
     assert body["production_version"] == version
     assert body["primary_metric"] == config.PRIMARY_METRIC
     assert 0.0 <= body["metric_value"] <= 1.0
+    # A model registered by plain `train` (not the F6 demo bake) is NOT flagged a demo.
+    assert body["demo"] is False
+
+
+def test_model_info_flags_a_demo_tagged_version(tmp_tracking, fixture_readings) -> None:
+    """A `demo=fixture`-tagged version makes /model-info self-labelling (F6/ADR-014).
+
+    The served metric on the fixture reads high by construction; the endpoint must say so
+    inline (a `demo` flag + a note) so the number is never read as a reported result.
+    """
+    version = _train_and_promote(tmp_tracking, fixture_readings)
+    # Tag the promoted version exactly as scripts/seed_demo_registry.py does.
+    MlflowClient(tracking_uri=tmp_tracking).set_model_version_tag(NAME, version, "demo", "fixture")
+    client = _client(tmp_tracking)
+
+    body = client.get("/model-info").json()
+    assert body["demo"] is True
+    assert "DEMO" in body["note"] and "not a reported result" in body["note"].lower()
 
 
 # --- nothing promoted yet: healthy but not ready -----------------------------
