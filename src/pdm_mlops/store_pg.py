@@ -5,8 +5,9 @@ and answers a probability. That is the right shape for a model endpoint, but it 
 *managed database* nothing honest to do — and the F7 gate is exactly "operate a managed
 cloud **resource** in production", not just a managed container. This module is that
 resource's job: every prediction the **demo UI** serves is appended here, and the page
-reads the most recent ones back. On Cloud Run the URL points at **Cloud SQL for
-Postgres**; the same code runs against a local SQLite file in tests.
+reads the most recent ones back. On Cloud Run the URL points at a **managed Postgres**
+(Neon, a serverless Postgres on the free tier — Cloud SQL works identically); the same
+code runs against a local SQLite file in tests.
 
 **Graceful degrade is a hard requirement.** The database is a Cloud-Run-only
 enhancement. When ``DATABASE_URL`` is unset — a local ``pdm serve``, the Hugging Face
@@ -35,8 +36,9 @@ from typing import Any
 
 from . import features
 
-#: The env var Cloud Run injects (from Secret Manager) with the Cloud SQL connection
-#: string, e.g. ``postgresql+psycopg://user:pass@/db?host=/cloudsql/<instance>``. Unset
+#: The env var Cloud Run injects (from Secret Manager) with the managed-Postgres
+#: connection string, e.g. Neon ``postgresql+psycopg://user:pass@ep-xxx.neon.tech/db?sslmode=require``
+#: (or Cloud SQL ``postgresql+psycopg://user:pass@/db?host=/cloudsql/<instance>``). Unset
 #: everywhere else — that is the signal to run without persistence (graceful degrade).
 DATABASE_URL_ENV = "DATABASE_URL"
 

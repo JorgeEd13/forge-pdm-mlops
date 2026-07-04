@@ -19,7 +19,8 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F4** | ✅ done | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production`-**aliased** model + Dockerfile + compose (serving + MLflow UI). A promotion/rollback (F3) changes what `/predict` answers with **no redeploy**; probabilities via the native flavor; `TestClient` round-trips a prediction (ADR-009) |
 | **F5** | ✅ done | **Drift monitoring + the auto-retrain loop (marquee)** — `monitor.py` (Evidently `DataDriftPreset` over the feature signals + a **share-threshold** drift decision) + `flows.py` (a Prefect `detect_drift → [if drift] → retrain → promote-or-hold` flow that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade) + the scheduled GH Actions trigger. Runs **in-process** on the fixture; `pdm monitor` / `pdm flow` live (ADR-013) |
 | **F6** | ✅ done | *(stretch)* hosted free-tier deploy (Hugging Face Spaces) → a live `/health` link. A **self-contained** `Dockerfile.hf` **bakes a fixture-trained demo registry** at build time (train → register → promote through the same F3 gate), so a fresh cloud deploy serves a real prediction and `/health` shows `model_loaded=true` — labelled a **demo** everywhere (ADR-001 boundary intact: a fixture model is *served, never reported*). `scripts/seed_demo_registry.py` + `docs/DEPLOY.md`; `retrain.yml` now runs `pdm flow` for real. The ≈0.82 full-data model is what `pdm train` produces locally (ADR-014) |
-| **F7** | ☑ code + scaffolding done *(live URL + `[cloud]` green land on the notebook)* | **Managed-cloud deploy — the managed-cloud gate.** The **same** `Dockerfile.hf` image on **Google Cloud Run** (a *managed* container runtime, not a VM) + **Cloud SQL for Postgres** as a **managed resource**. An interactive **demo UI** (`/demo`: set the J1939 parameters → get the probability) gives the DB an honest job — every served prediction is **logged to Cloud SQL** and read back into a recent-predictions panel. **Graceful degrade:** no `DATABASE_URL` ⇒ no persistence, so local/HF/CI are unaffected; the same `store_pg` code runs on tmp SQLite in tests. No PII, no committed secrets (Secret Manager). The `demo=fixture` honesty boundary intact. Closes the gate F0–F6 left open: *containerize ≠ operate managed cloud* (ADR-015) |
+| **F7** | ✅ **LIVE** — [Cloud Run + Neon](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo), $0 (ADR-016) | **Managed-cloud deploy — the managed-cloud gate.** The **same** `Dockerfile.hf` image on **Google Cloud Run** (a *managed* container runtime, not a VM) + a **managed Postgres** as a **managed resource** — **Neon** (free-tier serverless Postgres; Cloud SQL is the paid alternative, ADR-016). An interactive **demo UI** (`/demo`: set the J1939 parameters → get the probability) gives the DB an honest job — every served prediction is **logged to the managed Postgres** (`persisted:true`) and read back into a recent-predictions panel. **Graceful degrade:** no `DATABASE_URL` ⇒ no persistence, so local/HF/CI are unaffected; the same `store_pg` code runs on tmp SQLite in tests. No PII, no committed secrets (Secret Manager). The `demo=fixture` honesty boundary intact. Closes the gate F0–F6 left open: *containerize ≠ operate managed cloud* (ADR-015/016) |
+| **F8** | ☐ planned (next phase) | **Bring-your-own-data demo.** Upload a CAN/J1939 batch (CSV/Parquet) to `/demo` → per-row failure probabilities + a summary. Completes the interactive-demo vision (F7 does single-row parameter tuning; F8 adds "bring your own dataset"). The batch scoring core (`POST /predict`) already exists — F8 is the upload + column-validation + size-cap + summary layer, keeping the `demo=fixture` honesty banner and the no-raw-row-persistence posture. ADR-017 when built. |
 
 ---
 
@@ -328,6 +329,42 @@ below in full so the judgment (and the scoping) is on the record.
   round-trips exactly like `/predict` (and 503s the same when nothing is promoted); with a log
   injected the served rows **persist** and surface on the page; with no log the demo still works
   and says so. `test_store_pg.py` (8, `[cloud]`-gated) + `test_demo.py` (`[serve]`+`[cloud]`-gated)
-  green offline. **Lands on the notebook:** the live Cloud Run URL + Cloud SQL instance + the
-  `[cloud]`/`[serve]` green run (needs the Docker/Cloud Build path + interactive `gcloud` auth);
-  then the README carries the `/demo` link. **ADR-015.**
+  green offline. **DONE — LIVE 2026-07-04** at
+  https://forge-pdm-mlops-958199756179.us-central1.run.app (`/demo`, `persisted:true`), on
+  **Cloud Run + Neon** at $0 (Cloud SQL had no free tier — see the cost pivot). The README
+  carries the `/demo` link. **ADR-015 + ADR-016.**
+
+## F8 — Bring-your-own-data demo: upload a CAN/J1939 batch → scored predictions — *planned, next phase*
+
+- **Objective.** Complete the interactive-demo vision: today a tester can **open** `/demo` and
+  **customize the parameters of one row** → get a probability (F7, done). F8 adds the missing third
+  capability — **upload your own batch** of J1939 readings (CSV/Parquet) and get per-row failure
+  probabilities back, so a tester can bring *their* data, not just tune the seeded sliders.
+- **What already exists (so F8 is mostly a UI + parse + validation layer).** The batch **scoring
+  core is already shipped**: `POST /predict` takes a list of J1939 rows and returns per-row
+  probabilities through the shared `_score` core (era-`NULL` supported, columns reindexed to
+  `FEATURE_COLUMNS`, `assert_no_leakage` re-run). F8 wraps that with an upload surface.
+- **How (scoped).** `POST /demo/upload` (multipart) → parse CSV/Parquet (pandas) → **validate
+  against `FEATURE_COLUMNS`** (reject unknown/missing signal columns with a clear 4xx; era-`NULL`
+  allowed) → **bound the input** (max rows / max file size, a hard cap so a huge upload can't wedge
+  a scale-to-zero instance) → score via `_score` → return per-row probabilities **plus a small
+  summary** (n rows, % flagged high-risk at a stated threshold, maybe a probability histogram). The
+  `/demo` page gains a file-drop control alongside the existing form. Optionally log an
+  **aggregate** row to the managed Postgres (not every uploaded row — keep the no-PII, bounded-write
+  posture; an uploaded dataset is arbitrary, so store only counts/summary, never raw uploaded rows).
+- **Honesty boundary (unchanged, load-bearing).** Predictions still come from the **`demo=fixture`
+  model** — the page must say so on the upload result too (the tester's data is scored by the demo
+  model, not the ≈0.82 full-data one). **Decision to make in F8:** whether to also serve the real
+  full-data model for uploads — this trades image size / ADR-001 "never *report* off the fixture"
+  against a more meaningful result; default is to keep serving the labelled demo and say so.
+- **Guardrails to design first (forensic-watcher spirit).** Column/schema validation that **fails
+  loud** with an actionable message (not a 500); a size/row cap; a content check that the upload is
+  numeric J1939 signals, not arbitrary data; graceful handling of a malformed file (4xx, not crash).
+- **DoD.** Upload a small valid CSV → per-row probabilities + summary render on `/demo`; an upload
+  with wrong/missing columns → a clear 4xx with the offending columns named; an oversized upload →
+  rejected within the cap; era-`NULL` passes through; the demo-model banner is present on the result;
+  offline tests (`[serve]`-gated) cover the round-trip, the validation rejections, the size cap, and
+  the no-raw-row-persistence posture. Update `docs/DEPLOY.md`/README with the upload capability.
+- **Status.** **Not started** — scoped here so the plan for the interactive-demo vision is explicit.
+  This is a clean single-session phase (the scoring core exists; F8 is the upload/validate/summarize
+  layer). ADR-017 when built.

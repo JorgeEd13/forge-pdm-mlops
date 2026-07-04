@@ -1,7 +1,7 @@
 """F7 prediction-log tests — the managed-DB persistence layer (ADR-015).
 
-All offline: the SAME ``store_pg`` code that runs against Cloud SQL for Postgres in
-production runs here against a per-test **tmp SQLite** file, so the append/read contract,
+All offline: the SAME ``store_pg`` code that runs against a managed Postgres (Neon on
+Cloud Run) in production runs here against a per-test **tmp SQLite** file, so the append/read contract,
 the no-PII key restriction, era-NULL preservation, and — crucially — the **graceful
 degrade** (no ``DATABASE_URL`` ⇒ no log, never a crash) are all exercised without a
 server. SQLAlchemy is the ``[cloud]`` extra, so the module skips cleanly when it is
@@ -22,7 +22,7 @@ from pdm_mlops import features, store_pg  # noqa: E402
 
 @pytest.fixture
 def log(tmp_path):
-    """A prediction log bound to a throwaway SQLite file (stands in for Cloud SQL)."""
+    """A prediction log bound to a throwaway SQLite file (stands in for the managed Postgres)."""
     lg = store_pg.open_log(f"sqlite:///{(tmp_path / 'demo.db').as_posix()}")
     assert lg is not None
     yield lg

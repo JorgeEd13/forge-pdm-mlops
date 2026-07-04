@@ -80,8 +80,8 @@ class PredictResponse(BaseModel):
 class DemoPredictResponse(PredictResponse):
     """A ``/predict`` result plus whether it was persisted to the managed DB (F7).
 
-    ``persisted`` is ``True`` only when a prediction log is configured (Cloud SQL behind
-    Cloud Run). On a local run / HF Space it is ``False`` — the prediction still returns;
+    ``persisted`` is ``True`` only when a prediction log is configured (managed Postgres —
+    Neon behind Cloud Run). On a local run / HF Space it is ``False`` — the prediction still returns;
     it just wasn't logged. The demo page uses it to label the recent-predictions panel
     honestly ("logging off" vs. a live table).
     """
@@ -353,7 +353,7 @@ def create_app(
         """Score readings for the demo UI, logging each row to the managed DB (F7).
 
         The same scoring as ``/predict``, plus: if a prediction log is configured
-        (Cloud SQL behind Cloud Run), each scored row is appended to it. When no
+        (managed Postgres — Neon behind Cloud Run), each scored row is appended to it. When no
         ``DATABASE_URL`` is set the log is ``None`` and this is exactly ``/predict`` with
         a friendlier response shape — the managed resource is a pure enhancement.
         """
@@ -417,7 +417,7 @@ def _render_demo_page(
     **probability** rendered as a labelled meter (the number carries the meaning; colour
     is a redundant cue, never the only one). The ``demo=fixture`` honesty banner is shown
     inline, matching ``/model-info`` and the README. The recent-predictions panel reads
-    from the managed DB (Cloud SQL, F7) when configured, else a short "logging off" note.
+    from the managed DB (Neon Postgres, F7) when configured, else a short "logging off" note.
     """
     import html
 
@@ -444,7 +444,7 @@ def _render_demo_page(
             )
         else:
             recent_html = "<p class='muted'>No predictions logged yet — submit one above.</p>"
-        recent_note = "Logged to a managed <strong>Cloud SQL (Postgres)</strong> instance."
+        recent_note = "Logged to a managed <strong>Postgres</strong> instance (Neon)."
     else:
         recent_html = ""
         recent_note = (

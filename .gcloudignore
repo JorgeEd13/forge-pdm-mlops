@@ -1,0 +1,16 @@
+# Keep the Cloud Build upload lean: exclude everything the Dockerfile.hf build
+# context does NOT need (it COPYs only pyproject.toml, README.md, src, configs,
+# data, scripts). The committed smoke fixture under data/ is required and stays.
+.git/
+mlruns/
+reports/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+# Generated datasets (never committed; the fixture in data/ is the only kept file).
+data/generated/
+*.egg-info/

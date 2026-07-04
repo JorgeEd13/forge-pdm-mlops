@@ -33,9 +33,13 @@ ENV HOME=/home/appuser
 WORKDIR /app
 
 # Install deps first (pyproject only) so the layer caches across source edits.
+# [cloud] adds the psycopg driver so the F7 prediction log can reach a managed
+# Postgres (Neon/Cloud SQL) when DATABASE_URL is set. It stays dormant on the HF
+# Space (F6), where DATABASE_URL is unset and open_log() returns None — one image,
+# both targets.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[serve]"
+RUN pip install --no-cache-dir ".[serve,cloud]"
 
 # The canonical config + the committed smoke fixture the demo model trains on.
 COPY configs ./configs

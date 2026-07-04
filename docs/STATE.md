@@ -1,16 +1,30 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-02 (notebook session: full green suite + F2.8 measured + F5 drift bug fixed)
+Updated: 2026-07-04 (notebook session: **F7 managed-cloud deploy is LIVE** — Cloud Run + Neon, $0)
 
 ## Current focus
 
-**Notebook session 2026-07-02 (verification/recording, not a new phase).** On the notebook
-(`[ops]`+`[cloud]` installed, torch 2.12+cu130, RTX 4050): **(1)** full suite **133/137 green**
-— all F4 serve, F7 store_pg/demo, F2.8 ceiling, F2.7 TCN pass, so the long-pending **F4
-clean-run is recorded**; the 4 F5-drift reds (`test_monitor`×2, `test_flows`×2) are now
-**FIXED (2026-07-02, ADR-013 follow-up)**. **(2) F2.8 measured on full data** — the ceiling
-thesis is **refuted** (see the F2.8 block). **Still deferred (per Jorge):** the F7 live Cloud
-Run deploy (needs interactive `gcloud` auth + billing).
+**Notebook session 2026-07-04 — F7 (managed-cloud deploy) is LIVE and the gate is CLOSED
+(ADR-016).** The one gate F0–F6 left open — *operate a managed cloud runtime with a managed
+resource in production* — is now closed on a real hyperscaler at **$0/mo**. Live:
+**https://forge-pdm-mlops-958199756179.us-central1.run.app** — `/health` →
+`{"status":"ok","model_loaded":true,"model_version":"1"}`, and `POST /demo/predict` returns
+`persisted:true` (each served prediction is written to the managed Postgres and read back on
+`/demo`). **Cost pivot (Jorge):** Cloud SQL has **no free tier** (~$8-10/mo), so the managed
+*resource* is **Neon** (serverless Postgres, free tier) instead — same gate (managed runtime +
+managed resource), **zero code change** (`store_pg.open_log` takes any SQLAlchemy URL; only the
+`DATABASE_URL` secret differs). New `scripts/deploy_cloudrun_neon.sh` (Cloud Build → Secret
+Manager → Cloud Run, no Cloud SQL); the original `deploy_cloudrun.sh` stays as the paid
+alternative. **Two deploy bugs found + fixed live (ADR-016), both reusable:** (1) `Dockerfile.hf`
+installed `.[serve]` not `.[serve,cloud]` → **no `psycopg` driver** → `open_log` swallowed the
+connect error → `persisted:false` (graceful-degrade masking a missing dep; the endpoint never
+broke, which is *why* it hid); (2) the `/demo` page + `store_pg`/`serve` docstrings hard-coded
+"Cloud SQL" → corrected to "Neon Postgres" (the honest-output golden rule). Docs updated:
+`README` (F7 badge + `/demo` link + F0–F7 status), `docs/DEPLOY.md` (Neon-free primary path).
+
+> **Prior notebook session 2026-07-02 (verification/recording).** Full suite **133/137 green**
+> (F4 serve, F7 store_pg/demo, F2.8 ceiling, F2.7 TCN); the 4 F5-drift reds **FIXED** (ADR-013
+> follow-up); **F2.8 measured on full data** — the ceiling thesis **refuted** (see the F2.8 block).
 
 > **F5 drift bug — FIXED (2026-07-02, ADR-013 follow-up).** Found on the first-ever real
 > `[ops]` run (these tests had always skipped). Two never-run-code defects, both fixed:
@@ -31,13 +45,15 @@ Run deploy (needs interactive `gcloud` auth + billing).
 > 0.6.7 + this NumPy trips `np.histogram` on the *full* regen (fixture/offline unaffected), so
 > the end-to-end real-season breadth run waits on an Evidently/NumPy bump.
 
-**F7 (Managed-cloud deploy — Cloud Run + Cloud SQL — the managed-cloud gate) — CODE +
-SCAFFOLDING SHIPPED on the desktop (2026-07-02, ADR-015); the live Cloud Run URL + the
-`[cloud]` green run land on the notebook.** This closes the one gate F0–F6 deliberately left
-open: *operate a managed cloud runtime with a managed resource in production* — the senior
-claim that "containerize an app" (F4/F6) is not. HF Spaces (F6) is free hosting; F7 runs the
-**same** `Dockerfile.hf` image on **Google Cloud Run** (a managed, serverless container runtime,
-not a VM) with **Cloud SQL for Postgres** as a **managed resource**.
+**F7 (Managed-cloud deploy — Cloud Run + managed Postgres — the managed-cloud gate) — LIVE
+(2026-07-04, ADR-016; code/scaffolding shipped 2026-07-02, ADR-015).** This closes the one
+gate F0–F6 deliberately left open: *operate a managed cloud runtime with a managed resource in
+production* — the senior claim that "containerize an app" (F4/F6) is not. HF Spaces (F6) is free
+hosting; F7 runs the **same** `Dockerfile.hf` image on **Google Cloud Run** (a managed,
+serverless container runtime, not a VM) with a **managed Postgres** as the **managed resource**.
+**Live at https://forge-pdm-mlops-958199756179.us-central1.run.app** (revision 00003), managed
+resource = **Neon** (free-tier serverless Postgres; Cloud SQL is the paid alternative, see the
+cost pivot in Current focus).
 
 - **`src/pdm_mlops/store_pg.py`** — the prediction log the managed DB exists for. `open_log(url)`
   → a `PredictionLog` (SQLAlchemy Core `append`/`recent` over the SAME code on Postgres in prod
@@ -700,24 +716,29 @@ runnable skeleton — closed at an earlier boundary.)
 
 ## Next step (concrete)
 
-**F7 (managed-cloud deploy — Cloud Run + Cloud SQL, ADR-015) is the current frontier — CODE +
-SCAFFOLDING SHIPPED on the desktop (2026-07-02), the live URL lands on the notebook.** The
-next concrete action, on the machine with `gcloud` auth + the Docker/Cloud Build path:
+**F7 (managed-cloud deploy) is DONE & LIVE (2026-07-04, ADR-016) — the whole ROADMAP F0–F7 is
+now shipped.** Cloud Run + Neon, `persisted:true`, live at
+https://forge-pdm-mlops-958199756179.us-central1.run.app/demo. The deploy was done on the
+notebook (`gcloud` CLI installed there, project `forge-pdm-mlops` with billing linked, 4 APIs
+enabled).
 
-1. **One-time:** `gcloud auth login` → `gcloud config set project <id>` → enable
-   `run` / `sqladmin` / `artifactregistry` / `secretmanager` / `cloudbuild` (DEPLOY.md lists it).
-2. **Deploy:** `PROJECT_ID=<id> REGION=us-central1 bash scripts/deploy_cloudrun.sh` — builds
-   `Dockerfile.hf` via Cloud Build, creates the Cloud SQL Postgres instance + the
-   `DATABASE_URL` secret, rolls a Cloud Run revision wired to the SQL socket.
-3. **Verify:** `curl $URL/health` → `model_loaded:true` (first hit cold-starts + bakes the demo,
-   ~1–2 min); open `$URL/demo`, submit a prediction, confirm it appears in the recent panel
-   (⇒ Cloud SQL logging works end-to-end).
-4. **Record the green:** DONE on the notebook 2026-07-02 for F4/F7/F2.8 — full suite **133/137**
-   (all F4 serve + 13 F7 `[cloud]` + F2.8 ceiling pass). The **4 F5 drift reds** (share-threshold
-   arithmetic bug, see the top block) must be fixed before the suite is fully green.
-5. **Then, and only then:** paste the `$URL/demo` link into the README (F7 DoD), and flip the
-   **career-system managed-cloud gate** in `PERFIL_TECNICO.md` — *until the URL is live it is in
-   progress, not closed* (Docker builds + a card-on-file GCP billing account are involved).
+**Career-system propagation — DONE this session (2026-07-04):** the managed-cloud gate was
+**flipped to closed** in `PERFIL_TECNICO.md` (honest nuance kept: Cloud Run serverless-managed ≠
+operating a K8s cluster, which remains the one open cloud sub-gate); the **achado** was recorded
+in `achados/forge-pdm-mlops.md` (F7-LIVE entry, with the psycopg/graceful-degrade lesson); and
+`APROFUNDAMENTOS.md` (#37), `POSTS.md` (F7 "$0 managed-cloud gate" + F7-b "healthy endpoint, DB
+wrote nothing"), and `README_GITHUB.md` (F7 card + F0–F7 status) were updated.
+
+**Next BUILD phase = F8 (bring-your-own-data demo)** — scoped in ROADMAP: upload a CAN/J1939
+batch to `/demo` → per-row predictions + summary. This completes the interactive-demo vision
+(F7 = single-row parameter tuning; F8 = "bring your own dataset"). The batch scoring core
+(`POST /predict`) already exists, so F8 is the upload + column-validation + size-cap + summary
+layer — a clean single-session phase. ADR-017 when built.
+
+**Cost note for future me:** the live service is $0 (Cloud Run scale-to-zero + Neon free tier),
+but the GCP project has a **card-on-file billing account**. Tear-down if ever needed:
+`gcloud run services delete forge-pdm-mlops --region us-central1` (+ delete the Neon project in
+its own console). Nothing accrues while idle.
 
 **F5 (drift monitoring + the auto-retrain loop, ADR-013) is DONE — the marquee shipped
 (2026-07-02, desktop).** The complete production spine now runs end to end: **train → registry

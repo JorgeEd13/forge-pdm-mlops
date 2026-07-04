@@ -872,8 +872,10 @@ serves a real `/predict`); the container build runs on HF's runners.
 
 ## ADR-015 — Managed-cloud deploy: the same image on **Cloud Run** + a **Cloud SQL (Postgres)** prediction log behind an interactive demo, so "operate managed cloud in production" is demonstrated, not just "a container that builds"
 
-**Status.** Accepted (F7). *Code + deploy scaffolding shipped; the live Cloud Run URL +
-green `[cloud]` run land on the notebook (Docker daemon + interactive `gcloud` auth).*
+**Status.** Accepted (F7) — **superseded on the resource choice by ADR-016**: Cloud SQL has
+no free tier, so the shipped deploy uses **Neon** (free serverless Postgres) as the managed
+resource. Everything below stands except "Cloud SQL" → "a managed Postgres (Neon)". **LIVE
+2026-07-04** at https://forge-pdm-mlops-958199756179.us-central1.run.app.
 
 **Context.** F6 put a live `/health` on Hugging Face Spaces — but Spaces is *free-tier
 hosting*, which is deliberately **not** the same claim as operating a **managed cloud
@@ -950,3 +952,63 @@ and without a log, the 503 contract, the honesty banner on the page, persistence
 recent-predictions panel). **This closes the managed-cloud gate the F0–F6 spine deliberately
 left open** — the same governed model, now served from a managed runtime with a managed
 resource behind it, at a clickable URL.
+
+
+## ADR-016 — Close the managed-cloud gate at **$0**: keep Cloud Run, swap the managed resource to **Neon** (free serverless Postgres); ship the image with `.[serve,cloud]`
+
+**Status.** Accepted (F7). **LIVE 2026-07-04** at
+https://forge-pdm-mlops-958199756179.us-central1.run.app (revision 00003) — `/health` →
+`model_loaded:true`; `POST /demo/predict` → `persisted:true`; `/demo` reads the rows back.
+
+**Context.** ADR-015 specified **Cloud SQL** as the managed resource. Taking it live surfaced
+the blocker: **Cloud SQL has no free tier** — the smallest `db-f1-micro` bills ~$8-10/mo for
+as long as the instance exists. This is a **portfolio showcase with no budget**; a metered
+resource with a tear-down clock is the wrong shape for a "click the live link" artifact.
+Cloud Run itself is genuinely free (perpetual free tier, scale-to-zero → $0 idle); the *only*
+thing breaking $0 was the database. The gate objective — *a managed runtime + a managed
+resource in production* — does not require the resource to be GCP-native.
+
+**Decision.** Keep **Cloud Run** as the managed runtime; make the managed resource **Neon**
+(neon.tech) — a **serverless Postgres with a real free tier** (scale-to-zero, no card). The
+gate is fully closed (managed runtime + managed resource, both live), at **$0/mo**, with no
+tear-down clock — and it is arguably a *stronger* modern signal than a `db-f1-micro`. Because
+`store_pg.open_log(url)` takes **any** SQLAlchemy URL, this is a **zero-application-code
+change**: only the `DATABASE_URL` secret differs (a Neon `postgresql://…?sslmode=require`
+string, rewritten to the `postgresql+psycopg://` dialect and stored in Secret Manager exactly
+as before). New `scripts/deploy_cloudrun_neon.sh` = the ADR-015 flow minus Cloud SQL creation
+and the `/cloudsql` unix socket (Neon is reached over the public internet with TLS; Cloud Run
+egress is free). The original `deploy_cloudrun.sh` is retained as the **paid Cloud SQL
+alternative**.
+
+**Two deploy bugs found + fixed live — both reusable lessons.**
+1. **A missing extra hid behind graceful degrade.** `Dockerfile.hf` installed `.[serve]`, not
+   `.[serve,cloud]`, so the **`psycopg` driver was absent**. `create_engine("postgresql+psycopg://…")`
+   raised, `open_log()` swallowed it (by design — a bad/unreachable DB must not break app
+   start), returned `None`, and the demo reported `persisted:false` while the endpoint kept
+   working perfectly. **The graceful-degrade invariant that makes the resource safe to add is
+   the same property that masks a missing dependency** — so "the app is up and answering" is
+   *not* evidence the managed resource is wired; only `persisted:true` + a read-back is. Fix:
+   build with `.[serve,cloud]` (the driver is dormant on HF, where `DATABASE_URL` is unset).
+2. **Hard-coded backend name violated the honest-output rule.** The `/demo` page label and the
+   `serve.py`/`store_pg.py` docstrings said "Cloud SQL", but the deploy is Neon. Corrected to
+   "managed Postgres (Neon)". Backend-specific copy is a honesty-drift hazard when the same
+   image can point at more than one resource.
+
+**Alternatives rejected.**
+- *A GCP-native free managed SQL.* None exists — Cloud SQL and AlloyDB are both paid, no
+  always-free micro. Firestore is free but NoSQL (ADR-015 already rejected it as a weaker
+  "production database" claim than Postgres).
+- *Render/Fly.io instead of Cloud Run (no card at all).* Fully free and cardless, but loses
+  the recognizable **Google Cloud Run** signal; Cloud Run's free tier + a card on file (with
+  scale-to-zero + no Cloud SQL, the actual bill is $0) is the better resume hit. Kept as a
+  documented fallback in `docs/DEPLOY.md`.
+- *Supabase instead of Neon.* Also free managed Postgres, but its free project pauses after a
+  week of inactivity; Neon's scale-to-zero resumes on connect, better for an always-clickable
+  demo.
+
+**Consequences.** `Dockerfile.hf` installs `.[serve,cloud]`; new `scripts/deploy_cloudrun_neon.sh`;
+`serve.py` + `store_pg.py` labels/docstrings say "Neon Postgres"; `docs/DEPLOY.md` leads with the
+Neon-free path (Cloud SQL demoted to the paid alternative); `README` gains the F7 badge, the live
+`/demo` link, and F0–F7 status; `.gcloudignore` keeps the Cloud Build upload lean. The gate is
+**closed and live at $0**. *(No test change: the offline `[cloud]` tests already run against tmp
+SQLite via the same `store_pg` code path, backend-agnostic by construction.)*

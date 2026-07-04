@@ -132,6 +132,6 @@ def test_demo_page_shows_recent_predictions(tmp_tracking, fixture_readings, tmp_
     client.post("/demo/predict", json={"readings": _rows(fixture_readings, 1)})
     page = client.get("/demo").text
     # With a DB configured the page advertises the managed Postgres panel and a row table.
-    assert "Cloud SQL" in page
+    assert "Postgres" in page
     assert "<table" in page
     log.dispose()
