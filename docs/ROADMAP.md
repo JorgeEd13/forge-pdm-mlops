@@ -20,7 +20,8 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 | **F5** | ✅ done | **Drift monitoring + the auto-retrain loop (marquee)** — `monitor.py` (Evidently `DataDriftPreset` over the feature signals + a **share-threshold** drift decision) + `flows.py` (a Prefect `detect_drift → [if drift] → retrain → promote-or-hold` flow that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade) + the scheduled GH Actions trigger. Runs **in-process** on the fixture; `pdm monitor` / `pdm flow` live (ADR-013) |
 | **F6** | ✅ done | *(stretch)* hosted free-tier deploy (Hugging Face Spaces) → a live `/health` link. A **self-contained** `Dockerfile.hf` **bakes a fixture-trained demo registry** at build time (train → register → promote through the same F3 gate), so a fresh cloud deploy serves a real prediction and `/health` shows `model_loaded=true` — labelled a **demo** everywhere (ADR-001 boundary intact: a fixture model is *served, never reported*). `scripts/seed_demo_registry.py` + `docs/DEPLOY.md`; `retrain.yml` now runs `pdm flow` for real. The ≈0.82 full-data model is what `pdm train` produces locally (ADR-014) |
 | **F7** | ✅ **LIVE** — [Cloud Run + Neon](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo), $0 (ADR-016) | **Managed-cloud deploy — the managed-cloud gate.** The **same** `Dockerfile.hf` image on **Google Cloud Run** (a *managed* container runtime, not a VM) + a **managed Postgres** as a **managed resource** — **Neon** (free-tier serverless Postgres; Cloud SQL is the paid alternative, ADR-016). An interactive **demo UI** (`/demo`: set the J1939 parameters → get the probability) gives the DB an honest job — every served prediction is **logged to the managed Postgres** (`persisted:true`) and read back into a recent-predictions panel. **Graceful degrade:** no `DATABASE_URL` ⇒ no persistence, so local/HF/CI are unaffected; the same `store_pg` code runs on tmp SQLite in tests. No PII, no committed secrets (Secret Manager). The `demo=fixture` honesty boundary intact. Closes the gate F0–F6 left open: *containerize ≠ operate managed cloud* (ADR-015/016) |
-| **F8** | ☐ planned (next phase) | **Bring-your-own-data demo.** Upload a CAN/J1939 batch (CSV/Parquet) to `/demo` → per-row failure probabilities + a summary. Completes the interactive-demo vision (F7 does single-row parameter tuning; F8 adds "bring your own dataset"). The batch scoring core (`POST /predict`) already exists — F8 is the upload + column-validation + size-cap + summary layer, keeping the `demo=fixture` honesty banner and the no-raw-row-persistence posture. ADR-017 when built. |
+| **F8** | ☐ planned | **Bring-your-own-data demo.** Upload a CAN/J1939 batch (CSV/Parquet) to `/demo` → per-row failure probabilities + a summary. Completes the interactive-demo vision (F7 = single-row tuning; F8 = "bring your own dataset"). Includes a **map-your-columns step** (fuzzy auto-match + manual override) so **arbitrary header names** work and a partial dataset scores with missing signals as era-`NULL` — the versatility the feature is for. The batch scoring core (`POST /predict`) already exists; F8 is the upload + column-mapping + validate + summarize layer, keeping the `demo=fixture` banner + no-raw-row-persistence. ADR-017 when built. |
+| **F9** | ☐ planned | **Demo product-polish.** Friendlier `/demo`: **preset example buttons** (healthy/failing) + units/tooltips + bounded inputs + a **risk-meter** result (fixes "too technical"); **light/dark theme** (theme-aware, keeps the no-CDN constraint); **EN/PT-BR i18n** of the UI shell. A front-end/product-showcase play, paired with `receivables-agent` Phase 9 for a shared design language. Honesty banner + reported-number framing intact in both themes/languages. ADR-018 when built. |
 
 ---
 
@@ -344,14 +345,25 @@ below in full so the judgment (and the scoping) is on the record.
   core is already shipped**: `POST /predict` takes a list of J1939 rows and returns per-row
   probabilities through the shared `_score` core (era-`NULL` supported, columns reindexed to
   `FEATURE_COLUMNS`, `assert_no_leakage` re-run). F8 wraps that with an upload surface.
-- **How (scoped).** `POST /demo/upload` (multipart) → parse CSV/Parquet (pandas) → **validate
-  against `FEATURE_COLUMNS`** (reject unknown/missing signal columns with a clear 4xx; era-`NULL`
-  allowed) → **bound the input** (max rows / max file size, a hard cap so a huge upload can't wedge
-  a scale-to-zero instance) → score via `_score` → return per-row probabilities **plus a small
-  summary** (n rows, % flagged high-risk at a stated threshold, maybe a probability histogram). The
-  `/demo` page gains a file-drop control alongside the existing form. Optionally log an
-  **aggregate** row to the managed Postgres (not every uploaded row — keep the no-PII, bounded-write
-  posture; an uploaded dataset is arbitrary, so store only counts/summary, never raw uploaded rows).
+- **How (scoped).** `POST /demo/upload` (multipart) → parse CSV/Parquet (pandas) → **map the
+  tester's columns onto `FEATURE_COLUMNS`** (see the column-mapping step below) → **bound the input**
+  (max rows / max file size, a hard cap so a huge upload can't wedge a scale-to-zero instance) →
+  score via `_score` → return per-row probabilities **plus a small summary** (n rows, % flagged
+  high-risk at a stated threshold, maybe a probability histogram). The `/demo` page gains a file-drop
+  control alongside the existing form. Optionally log an **aggregate** row to the managed Postgres
+  (not every uploaded row — keep the no-PII, bounded-write posture; an uploaded dataset is arbitrary,
+  so store only counts/summary, never raw uploaded rows).
+- **Column-mapping — the "different column names we don't know of" problem (Jorge's versatility
+  concern).** *Why:* a real tester's CSV will almost never use our exact nine J1939 header names, and
+  a strict "reject unknown columns" gate makes "bring your own data" useless in practice. *Fix:* after
+  parsing, present a **map-your-columns step** — for each expected signal in `FEATURE_COLUMNS`, a
+  dropdown of the uploaded file's headers, **pre-filled by fuzzy auto-match** (case/spacing/synonym
+  tolerant, e.g. `RPM`/`engine_rpm` → `engine_speed_rpm`) with a confidence hint. The tester confirms
+  or corrects the mapping, then scores. Unmapped expected signals are allowed as **era-`NULL`** (the
+  model handles missing signals natively — LightGBM), so a partial dataset still scores, honestly
+  flagged as "N of 9 signals provided." Validation still **fails loud** on a file that has *no*
+  plausible mapping (not numeric J1939-like data at all) — a clear 4xx, not a 500. This turns the
+  upload from brittle to genuinely versatile, which is the point of the feature.
 - **Honesty boundary (unchanged, load-bearing).** Predictions still come from the **`demo=fixture`
   model** — the page must say so on the upload result too (the tester's data is scored by the demo
   model, not the ≈0.82 full-data one). **Decision to make in F8:** whether to also serve the real
@@ -360,11 +372,45 @@ below in full so the judgment (and the scoping) is on the record.
 - **Guardrails to design first (forensic-watcher spirit).** Column/schema validation that **fails
   loud** with an actionable message (not a 500); a size/row cap; a content check that the upload is
   numeric J1939 signals, not arbitrary data; graceful handling of a malformed file (4xx, not crash).
-- **DoD.** Upload a small valid CSV → per-row probabilities + summary render on `/demo`; an upload
-  with wrong/missing columns → a clear 4xx with the offending columns named; an oversized upload →
-  rejected within the cap; era-`NULL` passes through; the demo-model banner is present on the result;
-  offline tests (`[serve]`-gated) cover the round-trip, the validation rejections, the size cap, and
-  the no-raw-row-persistence posture. Update `docs/DEPLOY.md`/README with the upload capability.
+- **DoD.** Upload a small valid CSV → per-row probabilities + summary render on `/demo`; a file with
+  differently-named headers → the **map-your-columns step** auto-matches most and the tester confirms →
+  scores; a partial dataset (some signals absent) → scores with the missing signals as era-`NULL`,
+  honestly flagged "N of 9 provided"; a file that is *not* J1939-like → a clear 4xx (not a 500); an
+  oversized upload → rejected within the cap; the demo-model banner is present on the result; offline
+  tests (`[serve]`-gated) cover the round-trip, the fuzzy auto-match + manual override, the partial-data
+  era-`NULL` path, the validation rejections, the size cap, and the no-raw-row-persistence posture.
+  Update `docs/DEPLOY.md`/README with the upload + column-mapping capability.
 - **Status.** **Not started** — scoped here so the plan for the interactive-demo vision is explicit.
-  This is a clean single-session phase (the scoring core exists; F8 is the upload/validate/summarize
-  layer). ADR-017 when built.
+  A clean single-session phase (the scoring core exists; F8 is the upload + column-mapping + validate +
+  summarize layer). ADR-017 when built.
+
+## F9 — Demo product-polish: friendly inputs + light/dark theme + i18n — *planned*
+
+**Why (observed, from Jorge's 2026-07-04 review):** the live `/demo` is **too technical** — it presents
+nine raw J1939 signal fields (`engine_speed_rpm`, `coolant_temp_c`, …) with no hint of what a *reasonable*
+value is, and it is **single-theme and English-only**. A curious tester with no heavy-equipment domain
+knowledge can't tell a healthy engine from a failing one, and the bare probability output is unintuitive.
+This is also a deliberate **front-end/product showcase** play (a strong-but-underexplored axis), and it is
+**paired with the sibling `receivables-agent` Phase 9** (same theme + i18n work) so the two public demos
+share a design language — do them close together.
+
+- **9.1 — Friendly inputs (the biggest UX win).** *Why:* raw signal fields are meaningless to a
+  non-expert. *Fix:* **preset example buttons** that fill plausible rows ("healthy engine", "failing
+  bearing", "overheating") so a tester can try it in one click; **units + a short tooltip** per signal;
+  **sane slider ranges** instead of free-text; and a **risk-meter / gauge** result (with a plain-language
+  band — low/elevated/high risk) instead of a bare float. Keep the exact-value form available for power
+  users.
+- **9.2 — Light/dark theme.** Theme-aware (honours `prefers-color-scheme`) + a manual, persisted toggle.
+  Note: `/demo` is currently **inline-CSS/JS, no CDN** (clean-room/offline-safe) — keep that constraint;
+  the theming stays self-contained.
+- **9.3 — Internationalization (i18n), EN + PT-BR at least.** A lightweight locale layer (a small string
+  dictionary + toggle) over the UI chrome, the signal labels/tooltips, and the preset names. **Honesty
+  note to preserve:** i18n covers the **UI shell**, not translation of the model/output semantics; the
+  reported ≈0.82 framing and the `demo=fixture` banner stay intact in both languages.
+- **DoD.** A domain-naive tester can get a sensible prediction in one click via a preset; each signal has
+  a unit + tooltip + bounded input; the result shows a risk meter with a plain-language band; theme
+  toggle works in both schemes and persists; UI renders in EN and PT-BR; the honesty banner + clean-room
+  (no-CDN) constraint hold in both themes/languages. ADR-018 if a non-obvious choice is made. Coordinate
+  the visual language with `receivables-agent` Phase 9.
+- **Status.** **Not started** — scoped from the 2026-07-04 review. Independent of F8 (can ship before or
+  after); together F8 + F9 complete the "friendly, versatile, bring-your-own-data demo" vision.

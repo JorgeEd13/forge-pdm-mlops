@@ -729,11 +729,19 @@ in `achados/forge-pdm-mlops.md` (F7-LIVE entry, with the psycopg/graceful-degrad
 `APROFUNDAMENTOS.md` (#37), `POSTS.md` (F7 "$0 managed-cloud gate" + F7-b "healthy endpoint, DB
 wrote nothing"), and `README_GITHUB.md` (F7 card + F0–F7 status) were updated.
 
-**Next BUILD phase = F8 (bring-your-own-data demo)** — scoped in ROADMAP: upload a CAN/J1939
-batch to `/demo` → per-row predictions + summary. This completes the interactive-demo vision
-(F7 = single-row parameter tuning; F8 = "bring your own dataset"). The batch scoring core
-(`POST /predict`) already exists, so F8 is the upload + column-validation + size-cap + summary
-layer — a clean single-session phase. ADR-017 when built.
+**Next BUILD phases scoped 2026-07-04 (from Jorge's demo review) — pick one per session:**
+- **F8 (bring-your-own-data demo)** — upload a CAN/J1939 batch to `/demo` → per-row predictions +
+  summary, **including a map-your-columns step** (fuzzy auto-match + manual override) so *arbitrary
+  header names* work and partial datasets score with missing signals as era-`NULL` — that's the
+  "different column names we don't know of" versatility. Scoring core (`POST /predict`) already
+  exists; F8 = upload + column-mapping + validate + summarize. ADR-017.
+- **F9 (demo product-polish)** — the `/demo` is *too technical*: add **preset example buttons**
+  (healthy/failing) + units/tooltips + bounded inputs + a **risk-meter** result; **light/dark theme**
+  (keep the no-CDN constraint); **EN/PT-BR i18n** of the UI shell. Front-end showcase, **paired with
+  `receivables-agent` Phase 9** for a shared design language. ADR-018.
+- Also queued (career system, trivial): highlight both live demos more prominently on the GitHub
+  profile (`README_GITHUB.md` — a "▶ Live demos" callout). See the sibling receivables PLAN Phases
+  8–9 for the paired agent-reliability + demo-polish work.
 
 **Cost note for future me:** the live service is $0 (Cloud Run scale-to-zero + Neon free tier),
 but the GCP project has a **card-on-file billing account**. Tear-down if ever needed:
