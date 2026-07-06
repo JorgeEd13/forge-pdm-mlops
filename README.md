@@ -60,7 +60,7 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F0–F8 complete (the production spine is complete, end to end, and live — including managed cloud + an interactive bring-your-own-data demo).** F0 (skeleton), F1 (real
+> ⚠️ **Honest status — F0–F9 complete (the production spine is complete, end to end, and live — including managed cloud, an interactive bring-your-own-data demo, and a themed/bilingual demo UI).** F0 (skeleton), F1 (real
 > data layer + leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
@@ -82,7 +82,12 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
 > $0). **F8 (bring-your-own-data) is shipped**: `/demo` now also takes a **CSV/Parquet upload** →
 > per-row failure probabilities + a summary, with a **fuzzy column-mapping step** (stdlib
 > `difflib` + a J1939 synonym table) so a tester's own header names work and a *partial* dataset
-> still scores (missing signals as era-`NULL`) — nothing uploaded is stored (ADR-017). Nothing here implies a live
+> still scores (missing signals as era-`NULL`) — nothing uploaded is stored (ADR-017). **F9
+> (demo product-polish) is shipped**: `/demo` gains **friendly inputs** (units + tooltips +
+> bounded fields + one-click *healthy / failing-bearing / overheating* presets + a plain-language
+> risk meter), a **light/dark theme**, and an **EN/PT-BR** language toggle — all self-contained
+> (no CDN); the `demo=fixture` banner and the ≈0.82 framing hold in both languages, since i18n
+> localizes the UI, not the model output (ADR-018). Nothing here implies a live
 > *production* deployment; the served model is a fixture-trained **demo** (labelled everywhere),
 > and the drift→retrain loop is a **demonstrated closed loop on synthetic data**. The ≈0.82 model
 > below is the full-data one `pdm train` produces locally — the only number ever reported.
