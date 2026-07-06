@@ -1073,3 +1073,54 @@ map-your-columns table + a scored-batch summary (histogram + first-rows table), 
 CSS/JS, **no CDN**. `python-multipart` added to the `[serve]` extra (the multipart parser).
 25 new offline tests (`tests/test_upload.py`: pure functions need no extras; the endpoint half
 is `[serve]`-gated like `test_demo.py`). README/`docs/DEPLOY.md` document the capability.
+
+---
+
+## ADR-018 — Demo product-polish: friendly inputs + light/dark theme + EN/PT-BR i18n on `/demo`, all self-contained (no CDN)
+
+**Status:** Accepted · 2026-07-06
+
+**Context.** The live `/demo` (F7) presented nine raw J1939 fields (`engine_speed_rpm`,
+`coolant_temp_c`, …) with no hint of a plausible value, a bare-float result, one theme, and
+English only. A domain-naive tester couldn't tell a healthy engine from a failing one. Paired
+with `receivables-agent` Phase 9 (ADR-015) so the two public demos share one design language
+(hypercube navy+cyan). The hard constraint from F6/F7 must survive: `/demo` is **inline
+CSS/JS, no CDN** (clean-room / offline / Artifact-CSP-safe).
+
+**Decision.**
+- **Friendly inputs (9.1 — the biggest UX win).** A per-signal metadata table
+  (`_SIGNAL_META`: unit, bounded `min/max/step`, and a plain-language tooltip) turns each raw
+  field into a unit-labelled, bounded, tooltipped input. **One-click presets** (`_PRESETS`:
+  *healthy / failing bearing / overheating*) fill a whole plausible row so a tester tries it
+  in one click; the healthy preset is the form's seed. The result stays a **risk meter with a
+  plain-language band** (low / moderate / high) — the number and the risk word are the primary
+  encoding, the bar colour a redundant cue (never colour-alone).
+- **Light/dark theme (9.2).** CSS custom properties, **light default**, dark via
+  `prefers-color-scheme` **and** a persisted `data-theme` on `<html>` that wins in both
+  directions — the same override discipline as the sibling repo. Self-contained; the no-CDN
+  constraint holds.
+- **EN/PT-BR i18n (9.3).** A `_DEMO_I18N` dict (Python) injected into the page as JSON; a tiny
+  inline `t(key)` translator localizes all chrome, the friendly signal **labels + tooltips**,
+  and the **preset names**. Initial locale = a persisted choice → else the browser language
+  (`pt*` → PT-BR). The signal *field names* stay the literal J1939 keys (the API/scoring
+  contract) — only the presentation is localized.
+
+**Why inject data as JSON, not format-substituted HTML.** The page is a `str.format` template,
+so every literal `{`/`}` in the CSS/JS is already doubled (`{{`/`}}`). Injecting the metadata /
+presets / locale strings as **one JSON blob each** (`ensure_ascii=False`, since the page is
+UTF-8 via `<meta charset>`) keeps that structured data out of the brace-doubling minefield —
+the inline JS builds the form + i18n from the data at load time.
+
+**The honesty boundary (load-bearing, ADR-001 intact).** i18n covers the **UI shell only** —
+not the model or its output semantics. The `demo=fixture` banner and the ≈0.82 "reported
+result" framing are **translated in meaning, never softened**, and both survive in each
+language (asserted by test). An `i18nNote` states the UI is localized, the prediction is not.
+
+**Consequences.** `serve.py` gains `_SIGNAL_META` / `_PRESETS` / `_DEMO_I18N` and a rewritten
+self-contained `_DEMO_TEMPLATE` (theme tokens + injected JSON + a data-driven inline form);
+`_render_demo_page` injects four JSON blobs + the recent-predictions note key. **No new
+dependency**, no CDN, no change to any endpoint contract (`/demo/predict` + `/demo/upload`
+untouched). 5 new offline tests in `tests/test_demo.py` (theme-aware + self-contained, both
+locales + the honesty line held in each, friendly presets/units/tooltips, presets cover every
+signal, ranges bracket the healthy seed); the existing demo tests stay green. Shared visual
+language with `receivables-agent` Phase 9 (ADR-015).

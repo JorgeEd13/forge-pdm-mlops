@@ -103,6 +103,68 @@ def test_demo_page_renders_with_the_honesty_banner(tmp_tracking, fixture_reading
     assert "off" in page.lower()
 
 
+# --- F9: friendly inputs + light/dark theme + EN/PT-BR i18n (ADR-018) ----------
+# The GET /demo page renders without a promoted model (it only reads the log), so
+# these assert the self-contained shell directly — no train/promote needed.
+
+
+def _demo_page(log=None) -> str:
+    return serve._render_demo_page(log or [], persistence=log is not None)
+
+
+def test_demo_page_is_theme_aware_and_self_contained() -> None:
+    page = _demo_page()
+    # Light/dark theming via prefers-color-scheme AND a persisted data-theme override
+    # that must win in both directions (the manual toggle).
+    assert "prefers-color-scheme: dark" in page
+    assert '[data-theme="dark"]' in page and '[data-theme="light"]' in page
+    # Clean-room / offline: no external asset (no CDN link, script src, or @import).
+    assert "http://" not in page and "https://" not in page
+    assert "<script src" not in page and "@import" not in page
+
+
+def test_demo_page_ships_both_locales_and_holds_the_honesty_line_in_each() -> None:
+    page = _demo_page()
+    # Both locales are injected into the page (client-side toggle, no reload).
+    assert '"en"' in page and '"pt-BR"' in page
+    # The demo=fixture / not-a-reported-result honesty boundary survives in BOTH
+    # languages (ADR-018: i18n localizes the UI, never softens the honesty framing).
+    assert "not" in page and "reported result" in page  # EN banner
+    assert "não" in page and "resultado reportado" in page  # PT-BR banner
+    # The ≈0.82 framing is intact in each language.
+    assert page.count("0.82") >= 2
+
+
+def test_demo_page_has_friendly_presets_units_and_tooltips() -> None:
+    page = _demo_page()
+    # One-click presets (the biggest UX win): a whole plausible row per click.
+    assert all(k in page for k in ("healthy", "bearing", "overheat"))
+    assert 'data-preset="bearing"' in page
+    # Every signal carries a unit + a bounded range + a tooltip so a domain-naive
+    # tester sets sane values instead of guessing free-text.
+    for name, meta in serve._SIGNAL_META.items():
+        assert name in page and str(meta["unit"]) in page
+    # A localized honesty note that i18n localizes the UI, not the prediction.
+    assert "i18nNote" in page
+
+
+def test_presets_cover_every_feature_signal() -> None:
+    # Each preset must fill the full feature vector — a partial preset would leave a
+    # field at its stale value and mislead the tester about what it scored.
+    for name, row in serve._PRESETS.items():
+        missing = [s for s in features.FEATURE_COLUMNS if s not in row]
+        assert not missing, f"preset {name} missing {missing}"
+
+
+def test_signal_ranges_bracket_the_healthy_seed() -> None:
+    # Every friendly [min, max] range must contain the seeded healthy value, or the
+    # slider would clamp the default the moment the page loads.
+    healthy = serve._PRESETS["healthy"]
+    for name, meta in serve._SIGNAL_META.items():
+        v = healthy[name]
+        assert meta["min"] <= v <= meta["max"], f"{name}={v} outside [{meta['min']},{meta['max']}]"
+
+
 # --- persistence to the managed DB (the F7 gate-relevant half) ----------------
 
 

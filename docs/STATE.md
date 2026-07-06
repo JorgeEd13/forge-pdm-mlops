@@ -4,6 +4,30 @@ Updated: 2026-07-05 (session: **F8 bring-your-own-data demo — DONE**, ADR-017)
 
 ## Current focus
 
+**Session 2026-07-06 — F9 (demo product-polish) is DONE (ADR-018).** The `/demo` page was too
+technical (nine raw J1939 fields, bare-float result, one theme, English only); F9 makes it
+**friendly, themed and bilingual — all self-contained (no CDN)**. Three pieces in `serve.py`:
+**(1) Friendly inputs** — `_SIGNAL_META` gives each signal a unit + bounded `min/max/step` +
+plain-language tooltip; **one-click `_PRESETS`** (*healthy / failing bearing / overheating*) fill
+a whole plausible row (healthy = the form seed) so a domain-naive tester tries it in one click;
+the result stays a **risk-meter with a plain-language band** (low/moderate/high — number + word
+primary, colour a redundant cue). **(2) Light/dark theme** — CSS custom props, light default,
+dark via `prefers-color-scheme` **and** a persisted `data-theme` override that wins both ways.
+**(3) EN/PT-BR i18n** — `_DEMO_I18N` injected into the page as JSON (`ensure_ascii=False`, page is
+UTF-8) + a tiny inline `t()` translator over the chrome, the signal **labels + tooltips**, and the
+**preset names**; initial locale = persisted → else browser language (`pt*`→PT-BR). **Why JSON
+injection:** the page is a `str.format` template (CSS/JS braces already doubled) — one JSON blob
+each keeps the structured data out of the brace-doubling minefield. **Honesty boundary held
+(ADR-018 / ADR-001):** i18n localizes the **UI shell only**; the `demo=fixture` banner + the ≈0.82
+"reported result" framing are translated in *meaning*, never softened, and both survive in each
+language (asserted). No new dependency, no endpoint-contract change (`/demo/predict`,
+`/demo/upload` untouched). **Tests: 5 new in `tests/test_demo.py`** (theme-aware + self-contained;
+both locales + honesty line held in each; friendly presets/units/tooltips; presets cover every
+signal; ranges bracket the healthy seed) — verified green here; the existing demo tests stay green
+(the full `test_demo.py` = 12 passed offline, incl. the training/persistence round-trips).
+**Paired with `receivables-agent` Phase 9 (ADR-015)** for one shared design language (hypercube
+navy+cyan). **The whole ROADMAP F0–F9 is now shipped.** ADR-018 written.
+
 **Session 2026-07-05 — F8 (bring-your-own-data upload) is DONE (ADR-017).** The interactive
 demo's missing third capability shipped: a tester can now **upload their own CAN/J1939 batch**
 (CSV/Parquet) to `/demo` and get per-row failure probabilities + a summary — not just tune the

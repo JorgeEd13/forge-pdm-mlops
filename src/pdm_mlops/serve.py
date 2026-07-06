@@ -523,20 +523,65 @@ def config_version() -> str:
 
 # --- the demo page ------------------------------------------------------------
 
-# A neutral, example set of J1939 signal values to seed the form so a first-time
-# visitor can hit "Predict" without knowing the schema. Plausible healthy-ish readings;
-# NOT a fixture row (the demo is about the wiring, not a reported number).
-_DEMO_SEED: dict[str, float] = {
-    "engine_speed_rpm": 1800,
-    "coolant_temp_c": 92,
-    "oil_pressure_kpa": 320,
-    "engine_load_pct": 65,
-    "fuel_rate_lph": 24,
-    "boost_pressure_kpa": 150,
-    "egt_c": 480,
-    "def_level_pct": 55,
-    "vibration_mms": 3.2,
+# Per-signal metadata that turns the raw J1939 fields into *friendly* inputs (F9):
+# a plain-language label, a unit, a short tooltip, and a bounded [min, max, step]
+# range so a domain-naive tester sets sane values on a slider instead of guessing
+# free-text. The keys stay the literal signal names (the API/scoring contract);
+# only the presentation is friendly. i18n localizes label+tooltip on top of this.
+_SIGNAL_META: dict[str, dict[str, object]] = {
+    "engine_speed_rpm": {"unit": "rpm", "min": 600, "max": 2500, "step": 10},
+    "coolant_temp_c": {"unit": "°C", "min": 60, "max": 130, "step": 1},
+    "oil_pressure_kpa": {"unit": "kPa", "min": 100, "max": 550, "step": 5},
+    "engine_load_pct": {"unit": "%", "min": 0, "max": 100, "step": 1},
+    "fuel_rate_lph": {"unit": "L/h", "min": 0, "max": 80, "step": 1},
+    "boost_pressure_kpa": {"unit": "kPa", "min": 0, "max": 300, "step": 5},
+    "egt_c": {"unit": "°C", "min": 200, "max": 750, "step": 5},
+    "def_level_pct": {"unit": "%", "min": 0, "max": 100, "step": 1},
+    "vibration_mms": {"unit": "mm/s", "min": 0, "max": 20, "step": 0.1},
 }
+
+# One-click preset rows so a tester can try a "healthy" or a "failing" machine in a
+# single click, without knowing what a plausible value is (the biggest UX win, F9.1).
+# These are illustrative operating points, NOT fixture rows — the demo is about the
+# wired endpoint, never a reported number. "healthy" doubles as the seed values.
+_PRESETS: dict[str, dict[str, float]] = {
+    "healthy": {
+        "engine_speed_rpm": 1800,
+        "coolant_temp_c": 92,
+        "oil_pressure_kpa": 320,
+        "engine_load_pct": 65,
+        "fuel_rate_lph": 24,
+        "boost_pressure_kpa": 150,
+        "egt_c": 480,
+        "def_level_pct": 55,
+        "vibration_mms": 3.2,
+    },
+    "bearing": {  # a failing bearing: high vibration + creeping oil pressure loss
+        "engine_speed_rpm": 1850,
+        "coolant_temp_c": 95,
+        "oil_pressure_kpa": 210,
+        "engine_load_pct": 70,
+        "fuel_rate_lph": 26,
+        "boost_pressure_kpa": 150,
+        "egt_c": 500,
+        "def_level_pct": 50,
+        "vibration_mms": 11.5,
+    },
+    "overheat": {  # thermal event: coolant + EGT high, oil pressure sagging
+        "engine_speed_rpm": 1900,
+        "coolant_temp_c": 118,
+        "oil_pressure_kpa": 240,
+        "engine_load_pct": 88,
+        "fuel_rate_lph": 34,
+        "boost_pressure_kpa": 180,
+        "egt_c": 660,
+        "def_level_pct": 40,
+        "vibration_mms": 4.5,
+    },
+}
+
+# The healthy preset is the form's seed (a first visitor can hit Predict immediately).
+_DEMO_SEED: dict[str, float] = _PRESETS["healthy"]
 
 
 def _render_demo_page(
@@ -544,23 +589,25 @@ def _render_demo_page(
 ) -> str:
     """Render the self-contained demo HTML (inline CSS/JS, no external asset).
 
-    A form seeded with the :data:`features.FEATURE_COLUMNS` signals → a single failure
-    **probability** rendered as a labelled meter (the number carries the meaning; colour
-    is a redundant cue, never the only one). The ``demo=fixture`` honesty banner is shown
-    inline, matching ``/model-info`` and the README. The recent-predictions panel reads
-    from the managed DB (Neon Postgres, F7) when configured, else a short "logging off" note.
+    Friendly inputs (F9): each :data:`features.FEATURE_COLUMNS` signal is a bounded,
+    unit-labelled, tooltipped field seeded from the healthy preset; one-click presets
+    fill a whole plausible row; the result is a failure **probability** rendered as a
+    labelled meter with a plain-language risk band (the number carries the meaning,
+    colour is a redundant cue). Light/dark theme + EN/PT-BR i18n are self-contained
+    (no CDN). The ``demo=fixture`` honesty banner + ≈0.82 framing are intact in **both**
+    languages. The recent-predictions panel reads from the managed DB (Neon, F7) when
+    configured, else a short "logging off" note.
+
+    The signal metadata, presets and locale strings are injected as **JSON** (not
+    format-substituted HTML) so the tiny inline JS builds the form/i18n from data — this
+    keeps the ``str.format`` template free of the brace-doubling that raw data would need.
     """
     import html
 
-    # Form inputs, one per signal, seeded with a neutral example value.
-    fields = "\n".join(
-        f'<label class="field"><span>{html.escape(name)}</span>'
-        f'<input type="number" step="any" name="{html.escape(name)}" '
-        f'value="{_DEMO_SEED.get(name, "")}"></label>'
-        for name in features.FEATURE_COLUMNS
-    )
+    signal_meta = {name: _SIGNAL_META[name] for name in features.FEATURE_COLUMNS}
 
-    # Recent predictions table (server-rendered), or the logging-off note.
+    # Recent predictions rows (server-rendered), or the logging-off note. The chrome
+    # around them is localized client-side; the data itself is language-neutral.
     if persistence:
         if recent:
             rows = "\n".join(
@@ -570,58 +617,301 @@ def _render_demo_page(
                 for r in recent
             )
             recent_html = (
-                "<table class='recent'><thead><tr><th>when</th><th>model</th>"
-                f"<th>failure prob.</th></tr></thead><tbody>{rows}</tbody></table>"
+                "<table class='recent'><thead><tr><th data-i18n='colWhen'></th>"
+                "<th data-i18n='colModel'></th><th data-i18n='colProb'></th></tr>"
+                f"</thead><tbody>{rows}</tbody></table>"
             )
         else:
-            recent_html = "<p class='muted'>No predictions logged yet — submit one above.</p>"
-        recent_note = "Logged to a managed <strong>Postgres</strong> instance (Neon)."
+            recent_html = "<p class='muted' data-i18n='noneLogged'></p>"
+        recent_note_key = "loggingOn"
     else:
         recent_html = ""
-        recent_note = (
-            "Prediction logging is <strong>off</strong> (no <code>DATABASE_URL</code>) — "
-            "the managed-DB panel appears on the Cloud Run deploy."
-        )
+        recent_note_key = "loggingOff"
 
+    # ``ensure_ascii=False`` keeps real UTF-8 (°, ≈, PT-BR accents) in the source — the
+    # page is served as UTF-8 (<meta charset>), so this is cleaner than \uXXXX escapes.
     return _DEMO_TEMPLATE.format(
-        fields=fields,
+        signal_meta_json=json.dumps(signal_meta, ensure_ascii=False),
+        feature_order_json=json.dumps(list(features.FEATURE_COLUMNS), ensure_ascii=False),
+        presets_json=json.dumps(_PRESETS, ensure_ascii=False),
+        i18n_json=json.dumps(_DEMO_I18N, ensure_ascii=False),
         recent_html=recent_html,
-        recent_note=recent_note,
+        recent_note_key=recent_note_key,
     )
 
 
+# The locale strings for the /demo page (F9 i18n), injected as JSON and consumed by
+# the inline JS. Covers the UI SHELL ONLY — the chrome, the friendly signal labels +
+# tooltips, and the preset names. **Honesty boundary held in both languages** (ADR-018):
+# the `demo=fixture` banner and the ≈0.82 "reported result" framing are translated in
+# meaning, not softened; i18n localizes the interface, not the model/output semantics.
+# `sig`/`tip` are keyed by the literal signal name (which stays the API contract).
+_DEMO_I18N: dict[str, dict[str, object]] = {
+    "en": {
+        "langName": "EN",
+        "toDark": "☾ Dark",
+        "toLight": "☀ Light",
+        "title": "forge-pdm-mlops — try a prediction",
+        "sub": "Set the engine's sensor readings, get the model's failure probability.",
+        "banner": (
+            "<strong>DEMO model.</strong> The served model is trained on a small committed "
+            "<em>smoke fixture</em> — its probabilities illustrate the wired endpoint, they "
+            "are <strong>not</strong> a reported result. The real ≈0.82 ROC-AUC model is "
+            "trained on the full dataset locally (see <a href='/model-info'>/model-info</a>)."
+        ),
+        "presetsLabel": "Try an example:",
+        "presetHealthy": "Healthy engine",
+        "presetBearing": "Failing bearing",
+        "presetOverheat": "Overheating",
+        "predict": "Predict",
+        "scoring": "scoring…",
+        "failureProb": "Failure probability",
+        "riskLow": "low risk",
+        "riskModerate": "moderate risk",
+        "riskHigh": "high risk",
+        "modelV": "model v",
+        "logged": "logged",
+        "predictFailed": (
+            "Prediction failed: {msg} (is a model promoted? see <a href='/health'>/health</a>)"
+        ),
+        "byodTitle": "Bring your own data",
+        "byodBlurb": (
+            "Upload a CAN/J1939 batch (<code>.csv</code> or <code>.parquet</code>) to score "
+            "every row. Your column names don't have to match ours — you'll map them in the "
+            "next step, and any signal you leave unmapped is treated as a missing sensor "
+            "(era-NULL), so a partial dataset still scores. Same <strong>DEMO</strong> model "
+            "as above; nothing you upload is stored."
+        ),
+        "parsing": "parsing…",
+        "rows": "rows",
+        "signalsAutoMatched": "signals auto-matched",
+        "of": "of",
+        "uploadFailed": "Upload failed: {msg}",
+        "scoringFailed": "Scoring failed: {msg}",
+        "expectedSignal": "expected signal",
+        "yourColumn": "your column",
+        "leaveEmpty": "— (leave empty · era-NULL) —",
+        "autoMatched": "auto-matched",
+        "noMatch": "no match — map or leave empty",
+        "scoreBatch": "Score batch",
+        "batchBanner": (
+            "<strong>DEMO model.</strong> Your batch was scored by the fixture-trained demo "
+            "model (see <a href='/model-info'>/model-info</a>) — illustrative, not a reported "
+            "result. Nothing you uploaded was stored."
+        ),
+        "rowsScored": "rows scored",
+        "signalsProvided": "signals provided",
+        "atRisk": "≥ {t}% risk ({n} rows)",
+        "missingEraNull": "Missing signals scored as era-NULL: {list}",
+        "showingFirst": "Showing the first {n} of {total} rows.",
+        "axisProb": "failure probability →",
+        "colRow": "row",
+        "colProb": "failure prob.",
+        "recentTitle": "Recent predictions",
+        "colWhen": "when",
+        "colModel": "model",
+        "noneLogged": "No predictions logged yet — submit one above.",
+        "loggingOn": "Logged to a managed <strong>Postgres</strong> instance (Neon).",
+        "loggingOff": (
+            "Prediction logging is <strong>off</strong> (no <code>DATABASE_URL</code>) — "
+            "the managed-DB panel appears on the Cloud Run deploy."
+        ),
+        "i18nNote": (
+            "This interface is available in English and Portuguese; the model and its output "
+            "are unchanged — i18n localizes the UI, not the prediction semantics."
+        ),
+        "sig": {
+            "engine_speed_rpm": "Engine speed",
+            "coolant_temp_c": "Coolant temperature",
+            "oil_pressure_kpa": "Oil pressure",
+            "engine_load_pct": "Engine load",
+            "fuel_rate_lph": "Fuel rate",
+            "boost_pressure_kpa": "Boost pressure",
+            "egt_c": "Exhaust gas temperature",
+            "def_level_pct": "DEF level",
+            "vibration_mms": "Vibration",
+        },
+        "tip": {
+            "engine_speed_rpm": "Crankshaft speed. Idle ≈ 700, working ≈ 1800.",
+            "coolant_temp_c": "Engine coolant. Normal ≈ 85–95; a sustained climb signals overheating.",
+            "oil_pressure_kpa": "Lubrication pressure. Healthy ≈ 300+; a slow drop hints at bearing wear.",
+            "engine_load_pct": "How hard the engine is working, 0–100%.",
+            "fuel_rate_lph": "Fuel consumption in litres per hour.",
+            "boost_pressure_kpa": "Turbocharger boost above atmospheric.",
+            "egt_c": "Exhaust gas temperature; runs high under heavy load or a thermal fault.",
+            "def_level_pct": "Diesel exhaust fluid (AdBlue) tank level, 0–100%.",
+            "vibration_mms": "Chassis/bearing vibration; a spike is the bearing-failure signature.",
+        },
+    },
+    "pt-BR": {
+        "langName": "PT",
+        "toDark": "☾ Escuro",
+        "toLight": "☀ Claro",
+        "title": "forge-pdm-mlops — teste uma previsão",
+        "sub": "Ajuste as leituras dos sensores do motor e veja a probabilidade de falha do modelo.",
+        "banner": (
+            "<strong>Modelo DEMO.</strong> O modelo servido é treinado num pequeno "
+            "<em>fixture de fumaça</em> versionado — suas probabilidades ilustram o endpoint "
+            "conectado, <strong>não</strong> são um resultado reportado. O modelo real de "
+            "ROC-AUC ≈0.82 é treinado no conjunto completo localmente "
+            "(veja <a href='/model-info'>/model-info</a>)."
+        ),
+        "presetsLabel": "Teste um exemplo:",
+        "presetHealthy": "Motor saudável",
+        "presetBearing": "Rolamento falhando",
+        "presetOverheat": "Superaquecimento",
+        "predict": "Prever",
+        "scoring": "pontuando…",
+        "failureProb": "Probabilidade de falha",
+        "riskLow": "risco baixo",
+        "riskModerate": "risco moderado",
+        "riskHigh": "risco alto",
+        "modelV": "modelo v",
+        "logged": "registrado",
+        "predictFailed": (
+            "Falha na previsão: {msg} (há um modelo promovido? veja "
+            "<a href='/health'>/health</a>)"
+        ),
+        "byodTitle": "Traga seus próprios dados",
+        "byodBlurb": (
+            "Envie um lote CAN/J1939 (<code>.csv</code> ou <code>.parquet</code>) para pontuar "
+            "cada linha. Os nomes das suas colunas não precisam coincidir com os nossos — você "
+            "os mapeia na próxima etapa, e qualquer sinal deixado sem mapeamento é tratado como "
+            "sensor ausente (era-NULL), então um conjunto parcial ainda é pontuado. Mesmo modelo "
+            "<strong>DEMO</strong> acima; nada que você enviar é armazenado."
+        ),
+        "parsing": "lendo…",
+        "rows": "linhas",
+        "signalsAutoMatched": "sinais mapeados automaticamente",
+        "of": "de",
+        "uploadFailed": "Falha no envio: {msg}",
+        "scoringFailed": "Falha na pontuação: {msg}",
+        "expectedSignal": "sinal esperado",
+        "yourColumn": "sua coluna",
+        "leaveEmpty": "— (deixar vazio · era-NULL) —",
+        "autoMatched": "mapeado automaticamente",
+        "noMatch": "sem correspondência — mapeie ou deixe vazio",
+        "scoreBatch": "Pontuar lote",
+        "batchBanner": (
+            "<strong>Modelo DEMO.</strong> Seu lote foi pontuado pelo modelo demo treinado no "
+            "fixture (veja <a href='/model-info'>/model-info</a>) — ilustrativo, não um "
+            "resultado reportado. Nada do que você enviou foi armazenado."
+        ),
+        "rowsScored": "linhas pontuadas",
+        "signalsProvided": "sinais fornecidos",
+        "atRisk": "≥ {t}% de risco ({n} linhas)",
+        "missingEraNull": "Sinais ausentes pontuados como era-NULL: {list}",
+        "showingFirst": "Mostrando as primeiras {n} de {total} linhas.",
+        "axisProb": "probabilidade de falha →",
+        "colRow": "linha",
+        "colProb": "prob. de falha",
+        "recentTitle": "Previsões recentes",
+        "colWhen": "quando",
+        "colModel": "modelo",
+        "noneLogged": "Nenhuma previsão registrada ainda — envie uma acima.",
+        "loggingOn": "Registrado num <strong>Postgres</strong> gerenciado (Neon).",
+        "loggingOff": (
+            "O registro de previsões está <strong>desligado</strong> (sem "
+            "<code>DATABASE_URL</code>) — o painel do banco gerenciado aparece no deploy "
+            "do Cloud Run."
+        ),
+        "i18nNote": (
+            "Esta interface está disponível em inglês e português; o modelo e sua saída não "
+            "mudam — a i18n localiza a UI, não a semântica da previsão."
+        ),
+        "sig": {
+            "engine_speed_rpm": "Rotação do motor",
+            "coolant_temp_c": "Temperatura do líquido de arrefecimento",
+            "oil_pressure_kpa": "Pressão do óleo",
+            "engine_load_pct": "Carga do motor",
+            "fuel_rate_lph": "Consumo de combustível",
+            "boost_pressure_kpa": "Pressão do turbo",
+            "egt_c": "Temperatura dos gases de escape",
+            "def_level_pct": "Nível de ARLA (DEF)",
+            "vibration_mms": "Vibração",
+        },
+        "tip": {
+            "engine_speed_rpm": "Rotação do virabrequim. Marcha lenta ≈ 700, trabalhando ≈ 1800.",
+            "coolant_temp_c": "Arrefecimento do motor. Normal ≈ 85–95; subida contínua indica superaquecimento.",
+            "oil_pressure_kpa": "Pressão de lubrificação. Saudável ≈ 300+; queda lenta sugere desgaste de rolamento.",
+            "engine_load_pct": "O quão exigido está o motor, 0–100%.",
+            "fuel_rate_lph": "Consumo de combustível em litros por hora.",
+            "boost_pressure_kpa": "Pressão do turbo acima da atmosférica.",
+            "egt_c": "Temperatura dos gases de escape; sobe sob carga pesada ou falha térmica.",
+            "def_level_pct": "Nível do tanque de ARLA (AdBlue), 0–100%.",
+            "vibration_mms": "Vibração do chassi/rolamento; um pico é a assinatura de falha de rolamento.",
+        },
+    },
+}
+
+
 # Inline CSS/JS only (clean-room / offline / Artifact-CSP-safe by the same discipline).
-# The JS posts the form to /demo/predict and renders the returned probability as a
-# labelled meter; the number and the risk word are the primary encoding, the bar colour
-# a redundant cue (accessibility: never colour-alone).
+# Light/dark theme via CSS custom props (prefers-color-scheme + a persisted `data-theme`
+# override that wins in both directions); EN/PT-BR i18n from the injected `I18N` JSON.
+# The JS builds the friendly form from `SIGNAL_META`, fills a whole row from `PRESETS`,
+# posts to /demo/predict, and renders the returned probability as a labelled meter — the
+# number + risk word are the primary encoding, the bar colour a redundant cue.
+
 _DEMO_TEMPLATE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge-pdm-mlops — try a prediction</title>
 <style>
+  /* Light is the default; dark applies via prefers-color-scheme AND a persisted
+     `data-theme` on <html> that wins in both directions (self-contained, no CDN). */
   :root {{ --ink:#1a2233; --muted:#5b6472; --line:#e2e6ec; --surface:#f7f8fa;
-           --accent:#3b5bdb; --demo:#8a5a00; --demo-bg:#fff6e0; }}
+           --bg:#ffffff; --accent:#3b5bdb; --demo:#8a5a00; --demo-bg:#fff6e0;
+           --demo-line:#f0d9a8; --err:#c92a2a; --meter-bg:#f7f8fa; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --ink:#e7e9ee; --muted:#9aa3b2; --line:#2b3340; --surface:#1f2530;
+             --bg:#0f1115; --accent:#38bdf8; --demo:#f4c65a; --demo-bg:#2a2312;
+             --demo-line:#4a3d17; --err:#f87171; --meter-bg:#1f2530; }}
+  }}
+  :root[data-theme="dark"] {{ --ink:#e7e9ee; --muted:#9aa3b2; --line:#2b3340;
+    --surface:#1f2530; --bg:#0f1115; --accent:#38bdf8; --demo:#f4c65a;
+    --demo-bg:#2a2312; --demo-line:#4a3d17; --err:#f87171; --meter-bg:#1f2530; }}
+  :root[data-theme="light"] {{ --ink:#1a2233; --muted:#5b6472; --line:#e2e6ec;
+    --surface:#f7f8fa; --bg:#ffffff; --accent:#3b5bdb; --demo:#8a5a00;
+    --demo-bg:#fff6e0; --demo-line:#f0d9a8; --err:#c92a2a; --meter-bg:#f7f8fa; }}
   * {{ box-sizing:border-box; }}
   body {{ margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-          color:var(--ink); background:#fff; }}
+          color:var(--ink); background:var(--bg); }}
   main {{ max-width:820px; margin:0 auto; padding:24px 20px 64px; }}
+  .top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; }}
   h1 {{ font-size:1.5rem; margin:.2rem 0 .1rem; }}
   .sub {{ color:var(--muted); margin:0 0 20px; }}
-  .banner {{ background:var(--demo-bg); color:var(--demo); border:1px solid #f0d9a8;
+  .controls {{ display:flex; gap:.4rem; flex-shrink:0; }}
+  .toggle {{ background:var(--surface); color:var(--muted); border:1px solid var(--line);
+    border-radius:999px; padding:.3rem .7rem; font-size:.78rem; cursor:pointer;
+    line-height:1; white-space:nowrap; }}
+  .toggle:hover {{ border-color:var(--accent); color:var(--ink); }}
+  .banner {{ background:var(--demo-bg); color:var(--demo); border:1px solid var(--demo-line);
              border-radius:8px; padding:10px 14px; font-size:.9rem; margin-bottom:22px; }}
+  .banner a {{ color:var(--demo); }}
+  .presets {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0 0 16px; }}
+  .presets .label {{ font-size:.8rem; color:var(--muted); }}
+  .preset {{ background:var(--surface); color:var(--ink); border:1px solid var(--line);
+    border-radius:999px; padding:.4rem .9rem; font-size:.85rem; cursor:pointer; }}
+  .preset:hover {{ border-color:var(--accent); }}
   .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
            gap:12px; }}
   .field {{ display:flex; flex-direction:column; gap:4px; font-size:.82rem;
             color:var(--muted); }}
+  .field .lab {{ display:flex; align-items:center; gap:4px; }}
+  .field .unit {{ color:var(--muted); opacity:.8; }}
+  .field .info {{ display:inline-flex; align-items:center; justify-content:center;
+    width:14px; height:14px; border-radius:50%; border:1px solid var(--line);
+    font-size:.62rem; color:var(--muted); cursor:help; flex-shrink:0; }}
   .field input {{ font-size:.95rem; padding:7px 9px; border:1px solid var(--line);
-                  border-radius:6px; color:var(--ink); }}
+                  border-radius:6px; color:var(--ink); background:var(--bg); }}
+  .field input:focus {{ outline:none; border-color:var(--accent); }}
   .actions {{ margin:20px 0; display:flex; gap:12px; align-items:center; }}
-  button {{ background:var(--accent); color:#fff; border:0; border-radius:8px;
+  button.go {{ background:var(--accent); color:#fff; border:0; border-radius:8px;
             padding:10px 20px; font-size:.95rem; font-weight:600; cursor:pointer; }}
-  button:disabled {{ opacity:.5; cursor:default; }}
+  button.go:disabled {{ opacity:.5; cursor:default; }}
   #result {{ margin-top:8px; }}
   .meter-wrap {{ display:flex; flex-direction:column; gap:6px; max-width:520px; }}
-  .meter {{ height:14px; background:var(--surface); border:1px solid var(--line);
+  .meter {{ height:14px; background:var(--meter-bg); border:1px solid var(--line);
             border-radius:7px; overflow:hidden; }}
   .meter > i {{ display:block; height:100%; border-radius:7px 0 0 7px;
                 transition:width .3s; }}
@@ -638,13 +928,13 @@ _DEMO_TEMPLATE = """<!doctype html>
   a {{ color:var(--accent); }}
   .drop {{ border:1.5px dashed var(--line); border-radius:8px; padding:16px;
            background:var(--surface); }}
-  .drop input[type=file] {{ font-size:.9rem; }}
+  .drop input[type=file] {{ font-size:.9rem; color:var(--ink); }}
   table.map {{ width:100%; border-collapse:collapse; font-size:.86rem; margin-top:14px; }}
   table.map th, table.map td {{ text-align:left; padding:6px 8px;
     border-bottom:1px solid var(--line); vertical-align:middle; }}
   table.map th {{ color:var(--muted); font-weight:600; }}
   table.map select {{ font-size:.86rem; padding:5px 7px; border:1px solid var(--line);
-    border-radius:6px; color:var(--ink); max-width:100%; }}
+    border-radius:6px; color:var(--ink); background:var(--bg); max-width:100%; }}
   .conf {{ font-size:.78rem; color:var(--muted); }}
   .summary {{ display:flex; flex-wrap:wrap; gap:10px 22px; margin:12px 0; }}
   .stat {{ display:flex; flex-direction:column; }}
@@ -660,32 +950,41 @@ _DEMO_TEMPLATE = """<!doctype html>
   table.rows th, table.rows td {{ text-align:left; padding:5px 9px;
     border-bottom:1px solid var(--line); }}
   table.rows th {{ color:var(--muted); font-weight:600; }}
-  .err {{ color:#c92a2a; }}
+  .i18n-note {{ margin-top:30px; font-size:.76rem; color:var(--muted); }}
+  .err {{ color:var(--err); }}
 </style></head>
 <body><main>
-  <h1>forge-pdm-mlops — try a prediction</h1>
-  <p class="sub">Set the J1939 signal values, get the model's failure probability.</p>
-  <div class="banner"><strong>DEMO model.</strong> The served model is trained on a small
-    committed <em>smoke fixture</em> — its probabilities illustrate the wired endpoint,
-    they are <strong>not</strong> a reported result. The real ≈0.82 ROC-AUC model is trained
-    on the full dataset locally (see <a href="/model-info">/model-info</a>). </div>
+  <div class="top">
+    <div>
+      <h1 data-i18n="title"></h1>
+      <p class="sub" data-i18n="sub"></p>
+    </div>
+    <div class="controls">
+      <button class="toggle" id="themeBtn"></button>
+      <button class="toggle" id="langBtn"></button>
+    </div>
+  </div>
+  <div class="banner" data-i18n-html="banner"></div>
+
+  <div class="presets">
+    <span class="label" data-i18n="presetsLabel"></span>
+    <button class="preset" data-preset="healthy" data-i18n="presetHealthy"></button>
+    <button class="preset" data-preset="bearing" data-i18n="presetBearing"></button>
+    <button class="preset" data-preset="overheat" data-i18n="presetOverheat"></button>
+  </div>
 
   <form id="f">
-    <div class="grid">{fields}</div>
+    <div class="grid" id="fields"></div>
     <div class="actions">
-      <button type="submit">Predict</button>
+      <button type="submit" class="go" data-i18n="predict"></button>
       <span class="muted" id="status"></span>
     </div>
   </form>
   <div id="result"></div>
 
   <section>
-    <h2>Bring your own data</h2>
-    <p class="muted">Upload a CAN/J1939 batch (<code>.csv</code> or <code>.parquet</code>) to
-      score every row. Your column names don't have to match ours — you'll map them in the
-      next step, and any signal you leave unmapped is treated as a missing sensor (era-NULL),
-      so a partial dataset still scores. Same <strong>DEMO</strong> model as above; nothing
-      you upload is stored.</p>
+    <h2 data-i18n="byodTitle"></h2>
+    <p class="muted" data-i18n-html="byodBlurb"></p>
     <div class="drop">
       <input type="file" id="file" accept=".csv,.parquet">
       <span class="muted" id="upStatus"></span>
@@ -695,19 +994,114 @@ _DEMO_TEMPLATE = """<!doctype html>
   </section>
 
   <section>
-    <h2>Recent predictions</h2>
-    <p class="muted">{recent_note}</p>
+    <h2 data-i18n="recentTitle"></h2>
+    <p class="muted" data-i18n-html="{recent_note_key}"></p>
     {recent_html}
   </section>
 
+  <p class="i18n-note" data-i18n="i18nNote"></p>
+
   <script>
+  const SIGNAL_META = {signal_meta_json};
+  const FEATURE_ORDER = {feature_order_json};
+  const PRESETS = {presets_json};
+  const I18N = {i18n_json};
+
+  // --- theme: prefers-color-scheme default + persisted manual override -----------
+  const THEME_KEY = 'forge-pdm.theme';
+  function initialTheme() {{
+    try {{ const s = localStorage.getItem(THEME_KEY);
+      if (s === 'light' || s === 'dark') return s; }} catch (e) {{}}
+    return (window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }}
+  let theme = initialTheme();
+  function applyTheme() {{
+    document.documentElement.setAttribute('data-theme', theme);
+    try {{ localStorage.setItem(THEME_KEY, theme); }} catch (e) {{}}
+    document.getElementById('themeBtn').textContent =
+      theme === 'dark' ? t('toLight') : t('toDark');
+  }}
+
+  // --- i18n: browser-language default + persisted manual override ----------------
+  const LANG_KEY = 'forge-pdm.lang';
+  function initialLang() {{
+    try {{ const s = localStorage.getItem(LANG_KEY);
+      if (I18N[s]) return s; }} catch (e) {{}}
+    return (navigator.language || 'en').toLowerCase().startsWith('pt') ? 'pt-BR' : 'en';
+  }}
+  let lang = initialLang();
+  function t(key) {{ const d = I18N[lang] || I18N.en; return (d[key] != null ? d[key] : (I18N.en[key] != null ? I18N.en[key] : key)); }}
+  function applyLang() {{
+    try {{ localStorage.setItem(LANG_KEY, lang); }} catch (e) {{}}
+    document.documentElement.setAttribute('lang', lang);
+    document.getElementById('langBtn').textContent = lang === 'en' ? 'PT' : 'EN';
+    // Text nodes and inner-HTML nodes tagged for translation.
+    for (const el of document.querySelectorAll('[data-i18n]'))
+      el.textContent = t(el.getAttribute('data-i18n'));
+    for (const el of document.querySelectorAll('[data-i18n-html]'))
+      el.innerHTML = t(el.getAttribute('data-i18n-html'));
+    buildFields();          // labels/tooltips are localized → rebuild (values preserved)
+    applyTheme();           // the theme button label is localized too
+  }}
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, c =>
+    ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
+
+  // --- friendly form: one bounded, unit-labelled, tooltipped field per signal ----
+  function currentValues() {{
+    const v = {{}};
+    for (const el of document.querySelectorAll('#fields input'))
+      v[el.name] = el.value;
+    return v;
+  }}
+  function buildFields() {{
+    const prev = currentValues();
+    const sig = (I18N[lang] || I18N.en).sig || {{}};
+    const tip = (I18N[lang] || I18N.en).tip || {{}};
+    let html = '';
+    for (const name of FEATURE_ORDER) {{
+      const m = SIGNAL_META[name] || {{}};
+      const seed = PRESETS.healthy[name];
+      const val = prev[name] !== undefined ? prev[name] : (seed !== undefined ? seed : '');
+      const label = esc(sig[name] || name);
+      const unit = m.unit ? ' <span class="unit">(' + esc(m.unit) + ')</span>' : '';
+      const info = tip[name]
+        ? ' <span class="info" title="' + esc(tip[name]) + '">i</span>' : '';
+      html += '<label class="field"><span class="lab">' + label + unit + info +
+        '</span><input type="number" name="' + esc(name) + '"' +
+        (m.min !== undefined ? ' min="' + m.min + '"' : '') +
+        (m.max !== undefined ? ' max="' + m.max + '"' : '') +
+        (m.step !== undefined ? ' step="' + m.step + '"' : ' step="any"') +
+        ' value="' + esc(val) + '"></label>';
+    }}
+    document.getElementById('fields').innerHTML = html;
+  }}
+  function fillPreset(name) {{
+    const row = PRESETS[name]; if (!row) return;
+    for (const el of document.querySelectorAll('#fields input'))
+      if (row[el.name] !== undefined) el.value = row[el.name];
+  }}
+
+  document.getElementById('themeBtn').addEventListener('click', () => {{
+    theme = theme === 'dark' ? 'light' : 'dark'; applyTheme();
+  }});
+  document.getElementById('langBtn').addEventListener('click', () => {{
+    lang = lang === 'en' ? 'pt-BR' : 'en'; applyLang();
+  }});
+  for (const b of document.querySelectorAll('.preset'))
+    b.addEventListener('click', () => fillPreset(b.dataset.preset));
+
+  applyLang();  // builds fields + stamps theme/lang; run once after listeners wired
+
+  // --- single-row predict --------------------------------------------------------
   const form = document.getElementById('f');
   const result = document.getElementById('result');
   const statusEl = document.getElementById('status');
   form.addEventListener('submit', async (e) => {{
     e.preventDefault();
     const btn = form.querySelector('button');
-    btn.disabled = true; statusEl.textContent = 'scoring…';
+    btn.disabled = true; statusEl.textContent = t('scoring');
     const reading = {{}};
     for (const el of form.querySelectorAll('input')) {{
       reading[el.name] = el.value === '' ? null : parseFloat(el.value);
@@ -722,67 +1116,69 @@ _DEMO_TEMPLATE = """<!doctype html>
       const p = data.failure_probability[0];
       const pct = (p * 100).toFixed(1);
       // Risk word + colour are a REDUNDANT cue on top of the number (never colour-alone).
-      let word = 'low', col = '#2b8a3e';
-      if (p >= 0.66) {{ word = 'high'; col = '#c92a2a'; }}
-      else if (p >= 0.33) {{ word = 'moderate'; col = '#e8590c'; }}
+      let word = t('riskLow'), col = '#2b8a3e';
+      if (p >= 0.66) {{ word = t('riskHigh'); col = '#c92a2a'; }}
+      else if (p >= 0.33) {{ word = t('riskModerate'); col = '#e8590c'; }}
       result.innerHTML =
-        '<div class="meter-wrap"><div class="headline">Failure probability: <b>' +
-        pct + '%</b> &nbsp;<span class="muted">(' + word + ' risk · model v' +
-        data.model_version + (data.persisted ? ' · logged' : '') + ')</span></div>' +
+        '<div class="meter-wrap"><div class="headline">' + esc(t('failureProb')) +
+        ': <b>' + pct + '%</b> &nbsp;<span class="muted">(' + esc(word) + ' · ' +
+        esc(t('modelV')) + data.model_version +
+        (data.persisted ? ' · ' + esc(t('logged')) : '') + ')</span></div>' +
         '<div class="meter"><i style="width:' + pct + '%;background:' + col + '"></i></div></div>';
       statusEl.textContent = '';
       if (data.persisted) setTimeout(() => location.reload(), 700);
     }} catch (err) {{
-      result.innerHTML = '<p class="muted">Prediction failed: ' + err.message +
-        ' (is a model promoted? see <a href="/health">/health</a>)</p>';
+      result.innerHTML = '<p class="muted">' +
+        t('predictFailed').replace('{{msg}}', esc(err.message)) + '</p>';
       statusEl.textContent = '';
     }} finally {{ btn.disabled = false; }}
   }});
 
-  // --- F8: bring-your-own-data upload -----------------------------------------
+  // --- F8: bring-your-own-data upload -------------------------------------------
   const fileInput = document.getElementById('file');
   const upStatus = document.getElementById('upStatus');
   const mapArea = document.getElementById('mapArea');
   const uploadResult = document.getElementById('uploadResult');
   let currentFile = null;
 
-  const esc = (s) => String(s).replace(/[&<>"]/g, c =>
-    ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
-
   fileInput.addEventListener('change', async () => {{
     uploadResult.innerHTML = ''; mapArea.innerHTML = '';
     if (!fileInput.files.length) return;
     currentFile = fileInput.files[0];
-    upStatus.textContent = 'parsing…';
+    upStatus.textContent = t('parsing');
     try {{
       const fd = new FormData(); fd.append('file', currentFile);
       const resp = await fetch('/demo/upload', {{ method:'POST', body: fd }});
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
       renderMapping(data);
-      upStatus.textContent = data.n_rows + ' rows · ' + data.n_signals_matched +
-        ' of ' + data.feature_columns.length + ' signals auto-matched';
+      upStatus.textContent = data.n_rows + ' ' + t('rows') + ' · ' + data.n_signals_matched +
+        ' ' + t('of') + ' ' + data.feature_columns.length + ' ' + t('signalsAutoMatched');
     }} catch (err) {{
       upStatus.textContent = '';
-      mapArea.innerHTML = '<p class="err">Upload failed: ' + esc(err.message) + '</p>';
+      mapArea.innerHTML = '<p class="err">' +
+        t('uploadFailed').replace('{{msg}}', esc(err.message)) + '</p>';
     }}
   }});
 
   function renderMapping(data) {{
+    const sig = (I18N[lang] || I18N.en).sig || {{}};
     let rows = '';
-    for (const sig of data.feature_columns) {{
-      const chosen = data.suggested_mapping[sig];
-      let opts = '<option value="">— (leave empty · era-NULL) —</option>';
+    for (const s of data.feature_columns) {{
+      const chosen = data.suggested_mapping[s];
+      let opts = '<option value="">' + esc(t('leaveEmpty')) + '</option>';
       for (const h of data.headers) opts += '<option value="' + esc(h) + '"' +
         (h === chosen ? ' selected' : '') + '>' + esc(h) + '</option>';
-      const conf = chosen ? 'auto-matched' : 'no match — map or leave empty';
-      rows += '<tr><td><code>' + esc(sig) + '</code></td><td><select data-sig="' +
-        esc(sig) + '">' + opts + '</select></td><td class="conf">' + conf + '</td></tr>';
+      const conf = chosen ? t('autoMatched') : t('noMatch');
+      const label = esc(sig[s] || s) + ' <code>' + esc(s) + '</code>';
+      rows += '<tr><td>' + label + '</td><td><select data-sig="' +
+        esc(s) + '">' + opts + '</select></td><td class="conf">' + esc(conf) + '</td></tr>';
     }}
     mapArea.innerHTML =
-      '<table class="map"><thead><tr><th>expected signal</th><th>your column</th>' +
-      '<th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<div class="actions"><button type="button" id="scoreBtn">Score batch</button></div>';
+      '<table class="map"><thead><tr><th>' + esc(t('expectedSignal')) + '</th><th>' +
+      esc(t('yourColumn')) + '</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div class="actions"><button type="button" class="go" id="scoreBtn">' +
+      esc(t('scoreBatch')) + '</button></div>';
     document.getElementById('scoreBtn').addEventListener('click', scoreBatch);
   }}
 
@@ -791,7 +1187,7 @@ _DEMO_TEMPLATE = """<!doctype html>
     for (const sel of mapArea.querySelectorAll('select'))
       mapping[sel.dataset.sig] = sel.value === '' ? null : sel.value;
     const btn = document.getElementById('scoreBtn');
-    btn.disabled = true; upStatus.textContent = 'scoring…';
+    btn.disabled = true; upStatus.textContent = t('scoring');
     try {{
       const fd = new FormData();
       fd.append('file', currentFile);
@@ -803,7 +1199,8 @@ _DEMO_TEMPLATE = """<!doctype html>
       upStatus.textContent = '';
     }} catch (err) {{
       upStatus.textContent = '';
-      uploadResult.innerHTML = '<p class="err">Scoring failed: ' + esc(err.message) + '</p>';
+      uploadResult.innerHTML = '<p class="err">' +
+        t('scoringFailed').replace('{{msg}}', esc(err.message)) + '</p>';
     }} finally {{ btn.disabled = false; }}
   }}
 
@@ -812,7 +1209,7 @@ _DEMO_TEMPLATE = """<!doctype html>
     const maxc = Math.max(1, ...s.histogram);
     let bars = '';
     for (const c of s.histogram)
-      bars += '<div class="bar" title="' + c + ' rows" style="height:' +
+      bars += '<div class="bar" title="' + c + '" style="height:' +
         (100 * c / maxc) + '%"></div>';
     const total = data.n_signals_provided + data.unmapped_signals.length;
     const N = Math.min(data.failure_probability.length, 50);
@@ -821,25 +1218,25 @@ _DEMO_TEMPLATE = """<!doctype html>
       rows += '<tr><td>' + (i + 1) + '</td><td>' +
         (data.failure_probability[i] * 100).toFixed(1) + '%</td></tr>';
     const more = data.n_rows > N
-      ? '<p class="muted">Showing the first ' + N + ' of ' + data.n_rows + ' rows.</p>' : '';
+      ? '<p class="muted">' + t('showingFirst').replace('{{n}}', N).replace('{{total}}', data.n_rows) + '</p>' : '';
     const missing = data.unmapped_signals.length
-      ? '<p class="muted">Missing signals scored as era-NULL: ' +
-        data.unmapped_signals.map(x => '<code>' + esc(x) + '</code>').join(', ') + '</p>' : '';
+      ? '<p class="muted">' + t('missingEraNull').replace('{{list}}',
+          data.unmapped_signals.map(x => '<code>' + esc(x) + '</code>').join(', ')) + '</p>' : '';
     uploadResult.innerHTML =
-      '<div class="banner"><strong>DEMO model.</strong> Your batch was scored by the ' +
-      'fixture-trained demo model (see <a href="/model-info">/model-info</a>) — illustrative, ' +
-      'not a reported result. Nothing you uploaded was stored.</div>' +
+      '<div class="banner">' + t('batchBanner') + '</div>' +
       '<div class="summary">' +
-        '<div class="stat"><b>' + data.n_rows + '</b><span>rows scored</span></div>' +
+        '<div class="stat"><b>' + data.n_rows + '</b><span>' + esc(t('rowsScored')) + '</span></div>' +
         '<div class="stat"><b>' + data.n_signals_provided + ' / ' + total +
-          '</b><span>signals provided</span></div>' +
-        '<div class="stat"><b>' + s.pct_high_risk.toFixed(0) + '%</b><span>≥ ' +
-          (s.threshold * 100).toFixed(0) + '% risk (' + s.n_high_risk + ' rows)</span></div>' +
+          '</b><span>' + esc(t('signalsProvided')) + '</span></div>' +
+        '<div class="stat"><b>' + s.pct_high_risk.toFixed(0) + '%</b><span>' +
+          esc(t('atRisk').replace('{{t}}', (s.threshold * 100).toFixed(0)).replace('{{n}}', s.n_high_risk)) +
+          '</span></div>' +
       '</div>' + missing +
       '<div class="hist">' + bars + '</div>' +
-      '<div class="hist-axis"><span>0%</span><span>failure probability →</span><span>100%</span></div>' +
-      '<table class="rows"><thead><tr><th>row</th><th>failure prob.</th></tr></thead><tbody>' +
-      rows + '</tbody></table>' + more;
+      '<div class="hist-axis"><span>0%</span><span>' + esc(t('axisProb')) +
+        '</span><span>100%</span></div>' +
+      '<table class="rows"><thead><tr><th>' + esc(t('colRow')) + '</th><th>' +
+      esc(t('colProb')) + '</th></tr></thead><tbody>' + rows + '</tbody></table>' + more;
   }}
   </script>
 </main></body></html>"""

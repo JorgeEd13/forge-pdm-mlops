@@ -391,7 +391,7 @@ below in full so the judgment (and the scoping) is on the record.
   `python-multipart` added to `[serve]`. (Decision deferred as scoped: still serves the labelled
   `demo=fixture` model for uploads, not the full-data one.)
 
-## F9 — Demo product-polish: friendly inputs + light/dark theme + i18n — *planned*
+## F9 — Demo product-polish: friendly inputs + light/dark theme + i18n — **DONE (2026-07-06, ADR-018)**
 
 **Why (observed, from Jorge's 2026-07-04 review):** the live `/demo` is **too technical** — it presents
 nine raw J1939 signal fields (`engine_speed_rpm`, `coolant_temp_c`, …) with no hint of what a *reasonable*
@@ -419,5 +419,11 @@ share a design language — do them close together.
   toggle works in both schemes and persists; UI renders in EN and PT-BR; the honesty banner + clean-room
   (no-CDN) constraint hold in both themes/languages. ADR-018 if a non-obvious choice is made. Coordinate
   the visual language with `receivables-agent` Phase 9.
-- **Status.** **Not started** — scoped from the 2026-07-04 review. Independent of F8 (can ship before or
-  after); together F8 + F9 complete the "friendly, versatile, bring-your-own-data demo" vision.
+- **Status.** **DONE (2026-07-06, ADR-018).** All three shipped: friendly inputs (`_SIGNAL_META`
+  units/bounds/tooltips + one-click `_PRESETS` healthy/bearing/overheat + the risk-band meter),
+  light/dark theme (CSS custom props, `prefers-color-scheme` + a persisted `data-theme` override),
+  and EN/PT-BR i18n (`_DEMO_I18N` injected as JSON + an inline `t()` translator over the chrome,
+  signal labels/tooltips, preset names). Self-contained, **no CDN**; the `demo=fixture` banner + the
+  ≈0.82 framing hold in both languages (asserted by test). 5 new offline tests in `test_demo.py`;
+  the existing demo tests stay green. Paired design language with `receivables-agent` Phase 9
+  (ADR-015). Together F8 + F9 complete the "friendly, versatile, bring-your-own-data demo" vision.
