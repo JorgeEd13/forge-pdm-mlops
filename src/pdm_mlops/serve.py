@@ -35,6 +35,7 @@ local SQLite backend as the rest of the pipeline (ADR-004).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,10 +45,11 @@ import pandas as pd
 from . import config, features
 from . import registry as _registry
 from . import store_pg
+from . import upload as _upload
 
 # FastAPI/pydantic are the [serve] extra — imported at module load so the app object
 # exists for `pdm serve` and the tests, but kept out of the core dependency set.
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -87,6 +89,51 @@ class DemoPredictResponse(PredictResponse):
     """
 
     persisted: bool
+
+
+class UploadPreview(BaseModel):
+    """The map-your-columns step (F8): what we parsed + a proposed column mapping.
+
+    Returned by ``POST /demo/upload`` when **no** mapping is supplied yet. The UI renders a
+    dropdown per expected signal, pre-selected with ``suggested_mapping`` (fuzzy auto-match),
+    and the tester confirms/corrects before scoring. ``n_signals_matched`` of 9 tells the
+    tester up front how much was recognised.
+    """
+
+    filename: str
+    n_rows: int
+    headers: list[str]
+    feature_columns: list[str]
+    suggested_mapping: dict[str, str | None]
+    n_signals_matched: int
+
+
+class UploadSummary(BaseModel):
+    """The batch aggregate shown above the per-row probabilities (F8)."""
+
+    threshold: float
+    n_high_risk: int
+    pct_high_risk: float
+    histogram: list[int]
+    bin_edges: list[float]
+
+
+class UploadScoreResponse(BaseModel):
+    """A scored uploaded batch (F8): per-row probabilities + the honest summary.
+
+    ``n_signals_provided`` (of 9) + ``unmapped_signals`` make a *partial* upload honest —
+    the missing signals were era-``NULL``, not silently zero. ``demo`` restates that the
+    scoring model is the fixture-trained demo (ADR-001), same as ``/model-info``.
+    """
+
+    model_version: str
+    n_rows: int
+    n_signals_provided: int
+    mapped_signals: dict[str, str]
+    unmapped_signals: list[str]
+    failure_probability: list[float]
+    summary: UploadSummary
+    demo: bool
 
 
 class ModelInfo(BaseModel):
@@ -275,7 +322,8 @@ def create_app(
             "The served model is a fixture-trained DEMO (see /model-info); the reported "
             "~0.82 model is trained on the full dataset locally.",
             "endpoints": {
-                "GET /demo": "an interactive 'set parameters → get a prediction' page",
+                "GET /demo": "an interactive 'set parameters → get a prediction' page, "
+                "with a 'bring your own data' CSV/Parquet batch upload",
                 "GET /health": "liveness + whether a model is loaded",
                 "GET /model-info": "the live production version + the metric it was gated on",
                 "POST /predict": "score a batch of J1939 readings → per-row failure probability",
@@ -323,20 +371,26 @@ def create_app(
             note=note,
         )
 
-    def _score(readings: list[dict[str, float | None]]) -> tuple[str, list[float]]:
-        """Resolve the production model and score ``readings`` → (version, probabilities).
+    def _score_frame(X: pd.DataFrame) -> tuple[str, list[float]]:
+        """Resolve the production model and score a prepared frame → (version, probabilities).
 
-        The shared core of ``/predict`` and ``/demo/predict``: the model resolution, the
-        frame build + leakage re-check, and the positive-class probabilities. Raises the
-        503 (nothing promoted) so both callers translate it identically.
+        The lowest scoring core, shared by ``/predict``, ``/demo/predict`` and the F8 upload:
+        model resolution (503 if nothing is promoted), a belt-and-braces leakage re-check, and
+        the positive-class probabilities. Takes an already-built :data:`features.FEATURE_COLUMNS`
+        frame so both the JSON path (``_to_frame``) and the upload path
+        (:func:`upload.build_frame`) reuse identical scoring.
         """
         try:
             loaded = store.load()
         except LookupError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        X = _to_frame(readings)
+        features.assert_no_leakage(X)
         proba = loaded.predict_proba(X)
         return loaded.version, [float(p) for p in proba]
+
+    def _score(readings: list[dict[str, float | None]]) -> tuple[str, list[float]]:
+        """Score a batch of JSON reading rows → (version, probabilities)."""
+        return _score_frame(_to_frame(readings))
 
     @app.post("/predict", response_model=PredictResponse)
     def predict(request: PredictRequest) -> PredictResponse:
@@ -366,6 +420,83 @@ def create_app(
             n_rows=len(proba),
             failure_probability=proba,
             persisted=log is not None,
+        )
+
+    def _is_demo_version(version: str) -> bool:
+        """Is the served version the fixture-trained demo? (the ``demo=fixture`` tag, F6)."""
+        try:
+            obj = store._client().get_model_version(config.REGISTERED_MODEL_NAME, version)
+            return obj.tags.get("demo") == "fixture"
+        except Exception:  # never let an audit-label lookup break a prediction
+            return False
+
+    @app.post("/demo/upload")
+    async def demo_upload(
+        file: UploadFile = File(...),
+        mapping: str | None = Form(default=None),
+    ):
+        """Bring-your-own-data (F8): upload a J1939 batch → per-row probabilities + summary.
+
+        **Two modes on one endpoint.** With **no** ``mapping`` it is *preview* mode: parse the
+        file (bounded), fuzzy-auto-match its headers onto the nine signals, and return the
+        proposed mapping for the tester to confirm (:class:`UploadPreview`). With a confirmed
+        ``mapping`` (a JSON ``{signal: header|null}`` string) it is *score* mode: apply the
+        mapping (unmapped signals → era-``NULL``), validate it is scorable, and score via the
+        shared core (:class:`UploadScoreResponse`).
+
+        **No raw uploaded row is persisted** — an uploaded dataset is arbitrary, so the
+        managed-DB posture stays "never store raw uploaded rows" (F7's log is untouched here).
+        Every foreseeable bad input (too large, unparseable, not J1939-like, no mapping) is a
+        clear 4xx via :class:`upload.UploadError`, never a 500.
+        """
+        # Read at most the cap (+1 to detect overflow) so a huge upload can't exhaust memory.
+        content = await file.read(_upload.MAX_UPLOAD_BYTES + 1)
+        try:
+            frame = _upload.parse_upload(file.filename or "", content)
+            headers = [str(c) for c in frame.columns]
+
+            if mapping is None:
+                suggested = _upload.suggest_mapping(headers)
+                return UploadPreview(
+                    filename=file.filename or "upload",
+                    n_rows=len(frame),
+                    headers=headers,
+                    feature_columns=list(features.FEATURE_COLUMNS),
+                    suggested_mapping=suggested,
+                    n_signals_matched=sum(1 for v in suggested.values() if v is not None),
+                )
+
+            try:
+                provided = json.loads(mapping)
+                if not isinstance(provided, dict):
+                    raise ValueError("mapping must be a JSON object")
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise _upload.UploadError(f"invalid mapping payload: {exc}") from exc
+
+            resolved = _upload.resolve_mapping(headers, provided)
+            X = _upload.build_frame(frame, resolved)
+            _upload.assert_scorable(X, resolved)
+        except _upload.UploadError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+        version, proba = _score_frame(X)
+        mapped = _upload.mapped_signals(resolved)
+        summary = _upload.summarize(proba, n_signals_provided=len(mapped))
+        return UploadScoreResponse(
+            model_version=version,
+            n_rows=len(proba),
+            n_signals_provided=len(mapped),
+            mapped_signals=mapped,
+            unmapped_signals=[s for s in features.FEATURE_COLUMNS if s not in mapped],
+            failure_probability=proba,
+            summary=UploadSummary(
+                threshold=summary.threshold,
+                n_high_risk=summary.n_high_risk,
+                pct_high_risk=summary.pct_high_risk,
+                histogram=summary.histogram,
+                bin_edges=summary.bin_edges,
+            ),
+            demo=_is_demo_version(version),
         )
 
     @app.get("/demo", response_class=HTMLResponse)
@@ -505,6 +636,31 @@ _DEMO_TEMPLATE = """<!doctype html>
   table.recent th {{ color:var(--muted); font-weight:600; }}
   code {{ background:var(--surface); padding:1px 5px; border-radius:4px; }}
   a {{ color:var(--accent); }}
+  .drop {{ border:1.5px dashed var(--line); border-radius:8px; padding:16px;
+           background:var(--surface); }}
+  .drop input[type=file] {{ font-size:.9rem; }}
+  table.map {{ width:100%; border-collapse:collapse; font-size:.86rem; margin-top:14px; }}
+  table.map th, table.map td {{ text-align:left; padding:6px 8px;
+    border-bottom:1px solid var(--line); vertical-align:middle; }}
+  table.map th {{ color:var(--muted); font-weight:600; }}
+  table.map select {{ font-size:.86rem; padding:5px 7px; border:1px solid var(--line);
+    border-radius:6px; color:var(--ink); max-width:100%; }}
+  .conf {{ font-size:.78rem; color:var(--muted); }}
+  .summary {{ display:flex; flex-wrap:wrap; gap:10px 22px; margin:12px 0; }}
+  .stat {{ display:flex; flex-direction:column; }}
+  .stat b {{ font-size:1.25rem; }}
+  .stat span {{ font-size:.78rem; color:var(--muted); }}
+  .hist {{ display:flex; align-items:flex-end; gap:3px; height:90px; margin:10px 0;
+    max-width:520px; }}
+  .hist .bar {{ flex:1; background:var(--accent); border-radius:3px 3px 0 0; min-height:2px;
+    opacity:.85; }}
+  .hist-axis {{ display:flex; justify-content:space-between; max-width:520px;
+    font-size:.72rem; color:var(--muted); }}
+  table.rows {{ width:100%; border-collapse:collapse; font-size:.84rem; margin-top:10px; }}
+  table.rows th, table.rows td {{ text-align:left; padding:5px 9px;
+    border-bottom:1px solid var(--line); }}
+  table.rows th {{ color:var(--muted); font-weight:600; }}
+  .err {{ color:#c92a2a; }}
 </style></head>
 <body><main>
   <h1>forge-pdm-mlops — try a prediction</h1>
@@ -522,6 +678,21 @@ _DEMO_TEMPLATE = """<!doctype html>
     </div>
   </form>
   <div id="result"></div>
+
+  <section>
+    <h2>Bring your own data</h2>
+    <p class="muted">Upload a CAN/J1939 batch (<code>.csv</code> or <code>.parquet</code>) to
+      score every row. Your column names don't have to match ours — you'll map them in the
+      next step, and any signal you leave unmapped is treated as a missing sensor (era-NULL),
+      so a partial dataset still scores. Same <strong>DEMO</strong> model as above; nothing
+      you upload is stored.</p>
+    <div class="drop">
+      <input type="file" id="file" accept=".csv,.parquet">
+      <span class="muted" id="upStatus"></span>
+    </div>
+    <div id="mapArea"></div>
+    <div id="uploadResult"></div>
+  </section>
 
   <section>
     <h2>Recent predictions</h2>
@@ -567,5 +738,108 @@ _DEMO_TEMPLATE = """<!doctype html>
       statusEl.textContent = '';
     }} finally {{ btn.disabled = false; }}
   }});
+
+  // --- F8: bring-your-own-data upload -----------------------------------------
+  const fileInput = document.getElementById('file');
+  const upStatus = document.getElementById('upStatus');
+  const mapArea = document.getElementById('mapArea');
+  const uploadResult = document.getElementById('uploadResult');
+  let currentFile = null;
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, c =>
+    ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
+
+  fileInput.addEventListener('change', async () => {{
+    uploadResult.innerHTML = ''; mapArea.innerHTML = '';
+    if (!fileInput.files.length) return;
+    currentFile = fileInput.files[0];
+    upStatus.textContent = 'parsing…';
+    try {{
+      const fd = new FormData(); fd.append('file', currentFile);
+      const resp = await fetch('/demo/upload', {{ method:'POST', body: fd }});
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+      renderMapping(data);
+      upStatus.textContent = data.n_rows + ' rows · ' + data.n_signals_matched +
+        ' of ' + data.feature_columns.length + ' signals auto-matched';
+    }} catch (err) {{
+      upStatus.textContent = '';
+      mapArea.innerHTML = '<p class="err">Upload failed: ' + esc(err.message) + '</p>';
+    }}
+  }});
+
+  function renderMapping(data) {{
+    let rows = '';
+    for (const sig of data.feature_columns) {{
+      const chosen = data.suggested_mapping[sig];
+      let opts = '<option value="">— (leave empty · era-NULL) —</option>';
+      for (const h of data.headers) opts += '<option value="' + esc(h) + '"' +
+        (h === chosen ? ' selected' : '') + '>' + esc(h) + '</option>';
+      const conf = chosen ? 'auto-matched' : 'no match — map or leave empty';
+      rows += '<tr><td><code>' + esc(sig) + '</code></td><td><select data-sig="' +
+        esc(sig) + '">' + opts + '</select></td><td class="conf">' + conf + '</td></tr>';
+    }}
+    mapArea.innerHTML =
+      '<table class="map"><thead><tr><th>expected signal</th><th>your column</th>' +
+      '<th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div class="actions"><button type="button" id="scoreBtn">Score batch</button></div>';
+    document.getElementById('scoreBtn').addEventListener('click', scoreBatch);
+  }}
+
+  async function scoreBatch() {{
+    const mapping = {{}};
+    for (const sel of mapArea.querySelectorAll('select'))
+      mapping[sel.dataset.sig] = sel.value === '' ? null : sel.value;
+    const btn = document.getElementById('scoreBtn');
+    btn.disabled = true; upStatus.textContent = 'scoring…';
+    try {{
+      const fd = new FormData();
+      fd.append('file', currentFile);
+      fd.append('mapping', JSON.stringify(mapping));
+      const resp = await fetch('/demo/upload', {{ method:'POST', body: fd }});
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+      renderBatchResult(data);
+      upStatus.textContent = '';
+    }} catch (err) {{
+      upStatus.textContent = '';
+      uploadResult.innerHTML = '<p class="err">Scoring failed: ' + esc(err.message) + '</p>';
+    }} finally {{ btn.disabled = false; }}
+  }}
+
+  function renderBatchResult(data) {{
+    const s = data.summary;
+    const maxc = Math.max(1, ...s.histogram);
+    let bars = '';
+    for (const c of s.histogram)
+      bars += '<div class="bar" title="' + c + ' rows" style="height:' +
+        (100 * c / maxc) + '%"></div>';
+    const total = data.n_signals_provided + data.unmapped_signals.length;
+    const N = Math.min(data.failure_probability.length, 50);
+    let rows = '';
+    for (let i = 0; i < N; i++)
+      rows += '<tr><td>' + (i + 1) + '</td><td>' +
+        (data.failure_probability[i] * 100).toFixed(1) + '%</td></tr>';
+    const more = data.n_rows > N
+      ? '<p class="muted">Showing the first ' + N + ' of ' + data.n_rows + ' rows.</p>' : '';
+    const missing = data.unmapped_signals.length
+      ? '<p class="muted">Missing signals scored as era-NULL: ' +
+        data.unmapped_signals.map(x => '<code>' + esc(x) + '</code>').join(', ') + '</p>' : '';
+    uploadResult.innerHTML =
+      '<div class="banner"><strong>DEMO model.</strong> Your batch was scored by the ' +
+      'fixture-trained demo model (see <a href="/model-info">/model-info</a>) — illustrative, ' +
+      'not a reported result. Nothing you uploaded was stored.</div>' +
+      '<div class="summary">' +
+        '<div class="stat"><b>' + data.n_rows + '</b><span>rows scored</span></div>' +
+        '<div class="stat"><b>' + data.n_signals_provided + ' / ' + total +
+          '</b><span>signals provided</span></div>' +
+        '<div class="stat"><b>' + s.pct_high_risk.toFixed(0) + '%</b><span>≥ ' +
+          (s.threshold * 100).toFixed(0) + '% risk (' + s.n_high_risk + ' rows)</span></div>' +
+      '</div>' + missing +
+      '<div class="hist">' + bars + '</div>' +
+      '<div class="hist-axis"><span>0%</span><span>failure probability →</span><span>100%</span></div>' +
+      '<table class="rows"><thead><tr><th>row</th><th>failure prob.</th></tr></thead><tbody>' +
+      rows + '</tbody></table>' + more;
+  }}
   </script>
 </main></body></html>"""

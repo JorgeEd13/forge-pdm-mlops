@@ -1,10 +1,34 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-04 (notebook session: **F7 managed-cloud deploy is LIVE** — Cloud Run + Neon, $0)
+Updated: 2026-07-05 (session: **F8 bring-your-own-data demo — DONE**, ADR-017)
 
 ## Current focus
 
-**Notebook session 2026-07-04 — F7 (managed-cloud deploy) is LIVE and the gate is CLOSED
+**Session 2026-07-05 — F8 (bring-your-own-data upload) is DONE (ADR-017).** The interactive
+demo's missing third capability shipped: a tester can now **upload their own CAN/J1939 batch**
+(CSV/Parquet) to `/demo` and get per-row failure probabilities + a summary — not just tune the
+seeded sliders (F7). The hard part was **column names**: a real CSV never uses our exact nine
+headers, so a new pure module **`src/pdm_mlops/upload.py`** does parse → **fuzzy `suggest_mapping`**
+(stdlib `difflib` + a nine-entry J1939 synonym table, **no new dep** — auto-matched **9/9** on
+realistically-renamed headers) → `build_frame` (unmapped signal → era-`NULL`, so a *partial*
+dataset still scores, flagged "N of 9 provided") → fail-loud `assert_scorable` → `summarize`
+(rows, % ≥ 50% risk, histogram). Wrapped by one two-mode **`POST /demo/upload`** (no `mapping`
+= preview returns the suggested mapping; a confirmed `mapping` JSON = score). `_score` was
+refactored to a shared **`_score_frame`** core so the JSON and upload paths score identically.
+The `/demo` page gained a file-drop + a map-your-columns table + a scored-batch summary
+(inline-JS histogram + first-50-rows table), still **no CDN**. **Guardrails fail loud** (2 MB
+size cap read as `cap+1` so a huge upload can't wedge a scale-to-zero instance; 5k row cap;
+non-J1939/prose file; no-mapping-selected; non-numeric mapped column) — all 4xx, never 500.
+**No raw uploaded row is persisted** (an injected log stays empty after upload+score — a test
+asserts it); the `demo=fixture` honesty banner is on the upload result too, and the response's
+`demo` flag is **tag-driven** (a locally-trained untagged model honestly reports `demo:false`).
+`python-multipart` added to `[serve]`. **Tests: `tests/test_upload.py` 25 green** (pure half
+needs no extras; endpoint half `[serve]`-gated like `test_demo.py`) + the existing
+`test_serve.py`/`test_demo.py` (16) unaffected by the `_score` refactor. **Next: F9** (demo
+product-polish: friendly inputs + light/dark theme + i18n) — **to be done together with
+`receivables-agent` Phase 9** (shared theme/i18n design language, same code where viable).
+
+**Prior notebook session 2026-07-04 — F7 (managed-cloud deploy) is LIVE and the gate is CLOSED
 (ADR-016).** The one gate F0–F6 left open — *operate a managed cloud runtime with a managed
 resource in production* — is now closed on a real hyperscaler at **$0/mo**. Live:
 **https://forge-pdm-mlops-958199756179.us-central1.run.app** — `/health` →

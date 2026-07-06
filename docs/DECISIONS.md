@@ -1012,3 +1012,64 @@ Neon-free path (Cloud SQL demoted to the paid alternative); `README` gains the F
 `/demo` link, and F0–F7 status; `.gcloudignore` keeps the Cloud Build upload lean. The gate is
 **closed and live at $0**. *(No test change: the offline `[cloud]` tests already run against tmp
 SQLite via the same `store_pg` code path, backend-agnostic by construction.)*
+
+## ADR-017 — Bring-your-own-data: an upload endpoint with a **fuzzy column-mapping** step, so an arbitrary CSV/Parquet batch scores against the nine J1939 signals — and a partial one still scores
+
+**Status.** Accepted (F8). Shipped 2026-07-05 (desktop/notebook session — code + tests offline).
+
+**Context.** The interactive demo had two of three capabilities: *open* `/demo` and *tune one
+row* → a probability (F7). The third — **upload your own batch** — was missing, so a tester
+could only play with the seeded sliders, never bring *their* data. The batch scoring core
+already existed (`POST /predict` → per-row probabilities through the shared `_score`), so F8
+is a **parse + map + validate + summarize layer**, not new modelling. The load-bearing hard
+part is **column names**: a real tester's CSV will almost never use our exact nine headers
+(`engine_speed_rpm`, …), and a strict "reject unknown columns" gate makes "bring your own
+data" useless in practice.
+
+**Decision.** A single `POST /demo/upload` (multipart) with **two modes**, and a pure,
+unit-tested `upload.py` module doing the work (serve.py stays thin HTTP wiring):
+1. **Preview** (no `mapping`): parse the file, **fuzzy auto-match** its headers onto the nine
+   signals, return the proposed mapping for the tester to confirm/correct. The match is a
+   **stdlib** score — normalized-token exact (1.0) > synonym table (0.95, e.g. `RPM`/`EngineSpeed`
+   → `engine_speed_rpm`) > `difflib` ratio for near-misses — assigned **globally greedily** so
+   two signals can't fight over one column and each header is used once. **No new dependency**
+   (no `rapidfuzz`/`thefuzz`) — the clean-room/light-deps discipline; `difflib` + a nine-entry
+   synonym table auto-matched **9/9** realistically-renamed headers in testing.
+2. **Score** (confirmed `mapping` JSON): apply it onto the fixed feature order; an **unmapped
+   signal is era-`NULL`** (the model handles missing signals natively — LightGBM), so a
+   *partial* dataset still scores, honestly flagged "N of 9 signals provided". Score via the
+   shared core, return per-row probabilities **plus a summary** (rows, % ≥ 50% risk, a
+   histogram).
+
+**Guardrails first (forensic-watcher spirit — fail loud, never 500).** A hard **size cap**
+(2 MB, read as `cap+1` bytes so a huge upload can't exhaust memory on a scale-to-zero
+instance) and **row cap** (5k); unknown extension, unparseable body, empty table, or a
+**no-numeric-columns** file (prose/garbage that isn't J1939-like) → a clear `UploadError`
+mapped to a 4xx; a confirmed mapping that maps nothing, or maps only non-numeric columns →
+also a loud 4xx. All exercised by tests.
+
+**Honesty + privacy (unchanged, load-bearing).** Predictions still come from the
+`demo=fixture` model — the upload result panel restates it and the response carries a
+tag-driven `demo` flag (not hard-coded: a locally-trained, untagged model honestly reports
+`demo:false`). **No raw uploaded row is persisted** — an uploaded dataset is arbitrary, so
+the F7 managed-DB posture stays "never store raw uploaded rows"; F8 simply doesn't write
+them (a test asserts an injected log stays empty after an upload+score). *Decision deferred:*
+serving the real full-data model for uploads (bigger image, ADR-001 "never *report* off the
+fixture" tension) — kept as the labelled demo for now, said so on the result.
+
+**Alternatives rejected.** *A fuzzy-match library* (`rapidfuzz`) — real capability, but a
+new runtime dep for a nine-column table `difflib` already handles; rejected on the light-deps
+rule. *A stateful two-request flow* (server holds the parsed frame between preview and score)
+— adds session state, wrong shape for a scale-to-zero instance; the client re-sends the small
+capped file instead (stateless). *Strict schema (reject unknown headers)* — defeats the whole
+"bring your own data" point. *Persisting uploaded rows to the managed DB* — violates the no-PII
+/ bounded-write posture; only counts/summaries would ever be storable, and even those add
+little, so nothing is written.
+
+**Consequences.** New `src/pdm_mlops/upload.py` (pure: parse/suggest/build/validate/summarize)
++ `POST /demo/upload` in `serve.py`; `_score` refactored to a shared `_score_frame` core so the
+JSON path and the upload path score identically; the `/demo` page gains a file-drop + a
+map-your-columns table + a scored-batch summary (histogram + first-rows table), still inline
+CSS/JS, **no CDN**. `python-multipart` added to the `[serve]` extra (the multipart parser).
+25 new offline tests (`tests/test_upload.py`: pure functions need no extras; the endpoint half
+is `[serve]`-gated like `test_demo.py`). README/`docs/DEPLOY.md` document the capability.

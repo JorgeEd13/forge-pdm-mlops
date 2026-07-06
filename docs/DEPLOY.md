@@ -130,6 +130,15 @@ scores *and* logs. The log stores only the synthetic signal values + the probabi
 model version + a UTC timestamp — **no PII**. When `DATABASE_URL` is unset (local, HF, CI)
 the demo degrades gracefully to **no persistence** — nothing about serving depends on the DB.
 
+**Bring-your-own-data (F8, ADR-017).** `/demo` also takes a **CSV/Parquet upload** →
+`POST /demo/upload` scores every row and returns per-row probabilities + a summary. Because a
+real batch won't use our nine exact header names, the page runs a **map-your-columns step**:
+the upload is fuzzy-matched (stdlib `difflib` + a J1939 synonym table — no new dependency) and
+the tester confirms/corrects the mapping before scoring; any unmapped signal is scored as
+era-`NULL`, so a **partial** dataset still scores ("N of 9 provided"). Bounded by a 2 MB / 5k-row
+cap; a non-J1939 or unparseable file is a clear 4xx, never a 500. **No uploaded row is stored** —
+the managed-DB posture stays "counts/summaries, never raw uploaded rows"; F8 writes nothing.
+
 ### Reference deploy — Cloud Run + Neon (free)
 
 **One-time setup:**

@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://jorgeed-forge-pdm-mlops.hf.space/health"><img src="https://img.shields.io/badge/live%20demo-%2Fhealth-brightgreen?logo=huggingface&logoColor=white" alt="Live demo — /health"></a>
   <a href="https://forge-pdm-mlops-958199756179.us-central1.run.app/demo"><img src="https://img.shields.io/badge/managed%20cloud-Cloud%20Run%20%2B%20Neon-4285F4?logo=googlecloud&logoColor=white" alt="Managed cloud — Cloud Run + Neon"></a>
-  <img src="https://img.shields.io/badge/status-F0%E2%80%93F7%20complete-success" alt="Status: F0–F7 complete">
+  <img src="https://img.shields.io/badge/status-F0%E2%80%93F8%20complete-success" alt="Status: F0–F8 complete">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
@@ -60,7 +60,7 @@ Nothing about the model is clever — that's the point. The dataset is *diverse,
 statistically credible, and fully reproducible*, so the **pipeline around it**
 (tracking, registry, serving, drift, orchestration) is the thing on display.
 
-> ⚠️ **Honest status — F0–F7 complete (the production spine is complete, end to end, and live — including managed cloud).** F0 (skeleton), F1 (real
+> ⚠️ **Honest status — F0–F8 complete (the production spine is complete, end to end, and live — including managed cloud + an interactive bring-your-own-data demo).** F0 (skeleton), F1 (real
 > data layer + leakage-safe features), **F2 (the training core — a two-model comparison, winner
 > registered in MLflow)**, **F2.5 (outlier robustness — a ground-truth-scored detection
 > ladder → a leakage-safe `signal_suspect` feature)**, **F2.6 (grouped-CV Optuna HPO
@@ -79,7 +79,10 @@ statistically credible, and fully reproducible*, so the **pipeline around it**
 > **managed Neon Postgres** behind the interactive
 > **[`/demo`](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo)** — each prediction is
 > logged to the managed DB and read back (a managed runtime + a managed resource in production, at
-> $0). Nothing here implies a live
+> $0). **F8 (bring-your-own-data) is shipped**: `/demo` now also takes a **CSV/Parquet upload** →
+> per-row failure probabilities + a summary, with a **fuzzy column-mapping step** (stdlib
+> `difflib` + a J1939 synonym table) so a tester's own header names work and a *partial* dataset
+> still scores (missing signals as era-`NULL`) — nothing uploaded is stored (ADR-017). Nothing here implies a live
 > *production* deployment; the served model is a fixture-trained **demo** (labelled everywhere),
 > and the drift→retrain loop is a **demonstrated closed loop on synthetic data**. The ≈0.82 model
 > below is the full-data one `pdm train` produces locally — the only number ever reported.
@@ -427,6 +430,8 @@ curl -s localhost:8000/health   # {"status":"ok","model_loaded":true,"model_vers
 | **F4** | Serving — FastAPI (`/predict`, `/health`, `/model-info`) over the `production` alias + Dockerfile + compose (serving + MLflow UI); follows a promotion/rollback with no redeploy ✅ |
 | **F5** | **Drift monitoring + the auto-retrain loop (marquee)** — Evidently drift report + share-threshold decision + a Prefect `detect → retrain → promote-or-hold` loop that routes every promotion through the **same F3 gate**, so auto-retrain can't auto-degrade ✅ |
 | **F6** | *(stretch)* hosted free-tier deploy (**Hugging Face Spaces**) → a live `/health` link. A self-contained `Dockerfile.hf` bakes a **demo** registry so a fresh deploy serves a real prediction; labelled a demo everywhere (ADR-001 intact — a fixture model is *served, never reported*) ✅ |
+| **F7** | **Managed-cloud deploy** — the same image on **Google Cloud Run** + a **managed Neon Postgres** behind an interactive [`/demo`](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo); every served prediction logged to the managed DB + read back. Closes the managed-cloud gate at **$0** (ADR-015/016) ✅ **LIVE** |
+| **F8** | **Bring-your-own-data demo** — upload a CAN/J1939 **CSV/Parquet** batch to `/demo` → per-row probabilities + a summary, with a **fuzzy column-mapping step** (arbitrary header names; a partial dataset scores with missing signals as era-`NULL`). No uploaded row stored (ADR-017) ✅ |
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for objectives and definitions of done, and
 [`docs/DECISIONS.md`](docs/DECISIONS.md) for the design rationale (ADRs).
