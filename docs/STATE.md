@@ -16,10 +16,26 @@ real near-event fixture row** and validated against a freshly-baked model — **
 overheat 99.2% · oil_starve 99.1% · bearing 99.7%**; (3) the `oil_starve` preset keeps its
 era-NULL fields blank (older sensor era), the form clears them, and slider ranges were widened to
 fit every preset. Full offline suite green (incl. two fixture-shape assumptions updated). Rebuilt
-the image + **redeployed to Cloud Run (rev … F9+multi-mode), pushed to GitHub, redeployed to the
-HF Space** so all three targets carry the same demo model. Honest boundary intact (`demo=fixture`).
-Follow-ups still open: **per-mode AUC** as a recorded metric (ceiling `by_mode` already computes it)
-and a **plan for adding more failure modes** to `can-telemetry-forge`.
+the image + **redeployed to Cloud Run + pushed to GitHub + redeployed to the HF Space**; all three
+targets verified serving the same demo model (healthy 0.04% / overheat 99.2% / oil_starve 99.1% /
+bearing 99.7%). Honest boundary intact (`demo=fixture`).
+
+> **Per-mode AUC (recorded 2026-07-06, `pdm ceiling` on the full 90-day data, seed 42).** The
+> headline **overall held-out ROC-AUC = 0.8125** is an average that hides real per-mode spread —
+> the honest per-row rung separates the three modes unevenly:
+>
+> | failure mode | held-out ROC-AUC | positives |
+> |---|---|---|
+> | `bearing` | **0.873** | 11,720 |
+> | `oil_starve` | 0.796 | 18,159 |
+> | `overheat` | 0.772 | 10,085 |
+>
+> By time-to-failure it sharpens toward the event, as intended: **0.92** within 24 h, 0.72 at
+> 72–168 h, 0.56 beyond the horizon. Takeaway: strongest on the high-vibration bearing signature,
+> weakest on overheat — worth stating rather than quoting a flat 0.82. (`ceiling.py`
+> `by_mode`/`by_horizon` already compute this; now surfaced as a number.)
+
+Remaining follow-up: a **plan for adding more failure modes** to `can-telemetry-forge` (below).
 
 **Session 2026-07-06 — F9 (demo product-polish) is DONE (ADR-018).** The `/demo` page was too
 technical (nine raw J1939 fields, bare-float result, one theme, English only); F9 makes it
