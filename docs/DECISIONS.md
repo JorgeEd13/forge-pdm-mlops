@@ -1124,3 +1124,49 @@ untouched). 5 new offline tests in `tests/test_demo.py` (theme-aware + self-cont
 locales + the honesty line held in each, friendly presets/units/tooltips, presets cover every
 signal, ranges bracket the healthy seed); the existing demo tests stay green. Shared visual
 language with `receivables-agent` Phase 9 (ADR-015).
+
+---
+
+## ADR-019 — Multi-mode smoke fixture: the baked demo model must know every failure mode, and the `/demo` presets are grounded in real per-mode near-event rows
+
+**Status.** Accepted (F9 follow-up, notebook 2026-07-06).
+
+**Context.** The `/demo` presets ("Overheating", "Failing bearing") scored ~0.00% on the live
+endpoint, reading as "the model does nothing". Root cause was **not** the model or the deploy:
+the committed smoke fixture (`data/sample_readings.parquet`) contained a **single** failure mode
+(`oil_starve`), even though the generator models three (`overheat` / `oil_starve` / `bearing`)
+and the full dataset has all three roughly balanced. The old `build_sample.py` reduced the
+canonical config to 24 units × 14 days — too small/short to catch the two rarer modes — so the
+baked demo model (trained on the fixture, ADR-014) only ever learned oil-starvation and correctly
+scored the other two modes near zero. The hand-written presets were never validated against the
+baked model, so this went unnoticed. (The reported ≈0.82 model is unaffected — it always trains
+on the full multi-mode dataset; only the offline demo slice was single-mode.)
+
+**Decision.**
+1. **Stratify the fixture by event mode.** `build_sample.py` now selects units with a fixed quota
+   per failure mode (+ healthy units), spread across vehicle classes, and **keeps the full 90-day
+   window** (only units + a coarser time-stride are reduced). It **fails loud** if any mode is
+   absent. Still a deterministic, faithful reduction of the canonical config (rules 3–5) — it just
+   guarantees every code path (every mode) is exercised offline. Result: ~29k rows, 34 units,
+   ≈940 KB, all three modes present (~480 failure rows each).
+2. **Ground every preset in a real near-event row.** Each "failing" preset is the actual fixture
+   row the baked model scores near-1 for that mode (lightly rounded), and "healthy" is a loaded-
+   but-fine machine scored near-0. Validated locally against a freshly-baked model:
+   **healthy 0.04% · overheat 99.2% · oil_starve 99.1% · bearing 99.7%**. A preset is now a
+   verified operating point, not a guess.
+3. **`oil_starve` preset keeps era-NULL fields.** In this fleet oil-starvation strikes an older
+   equipment era that physically lacks the egt/DEF/vibration sensors, so a faithful oil-starve row
+   leaves those three blank (era-NULL, a legitimate model input). The demo form clears those fields
+   for this preset (`fillPreset` treats a null preset value as "clear"). Slider ranges widened so
+   every preset value fits (coolant→160 °C, oil→0 kPa, fuel→220 L/h, egt→760 °C, vibration→30 mm/s).
+
+**Consequences.** `_PRESETS` gains a fourth entry (`oil_starve`) and allows `None`; `_SIGNAL_META`
+ranges widened; `fillPreset` clears era-NULL fields; EN/PT-BR i18n gains `presetOilStarve`. Tests:
+`test_presets_cover_every_feature_signal` now allows explicit `None`; a new
+`test_healthy_preset_is_fully_populated`; `test_signal_ranges_bracket_every_preset_value` checks
+**every** preset (not just healthy) — it would have caught the original clamp. Two fixture-shape
+assumptions updated: the ttf-horizon test now tolerates one time-stride of downsampling slack
+(ttf is diagnostic-only), and the degenerate-split test constructs its single-class holdout
+deterministically (the richer fixture is class-rich at every seed). The honest boundary is intact:
+the baked model is still fixture-trained and labeled `demo=fixture`; the ≈0.82 figure is still the
+full-data model's alone.

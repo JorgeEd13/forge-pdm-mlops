@@ -137,9 +137,11 @@ def test_demo_page_ships_both_locales_and_holds_the_honesty_line_in_each() -> No
 
 def test_demo_page_has_friendly_presets_units_and_tooltips() -> None:
     page = _demo_page()
-    # One-click presets (the biggest UX win): a whole plausible row per click.
-    assert all(k in page for k in ("healthy", "bearing", "overheat"))
+    # One-click presets (the biggest UX win): a whole plausible row per click. One per
+    # failure mode the model was trained on, so each shows a real, distinct probability.
+    assert all(k in page for k in ("healthy", "bearing", "overheat", "oil_starve"))
     assert 'data-preset="bearing"' in page
+    assert 'data-preset="oil_starve"' in page
     # Every signal carries a unit + a bounded range + a tooltip so a domain-naive
     # tester sets sane values instead of guessing free-text.
     for name, meta in serve._SIGNAL_META.items():
@@ -149,20 +151,32 @@ def test_demo_page_has_friendly_presets_units_and_tooltips() -> None:
 
 
 def test_presets_cover_every_feature_signal() -> None:
-    # Each preset must fill the full feature vector — a partial preset would leave a
-    # field at its stale value and mislead the tester about what it scored.
+    # Each preset must name every feature — a preset that OMITS a key would leave that
+    # field at its stale value and mislead the tester. An explicit ``None`` is allowed:
+    # it is era-NULL (a sensor this equipment era lacks) and the form clears the field.
     for name, row in serve._PRESETS.items():
         missing = [s for s in features.FEATURE_COLUMNS if s not in row]
         assert not missing, f"preset {name} missing {missing}"
 
 
-def test_signal_ranges_bracket_the_healthy_seed() -> None:
-    # Every friendly [min, max] range must contain the seeded healthy value, or the
-    # slider would clamp the default the moment the page loads.
+def test_healthy_preset_is_fully_populated() -> None:
+    # The healthy preset doubles as the form seed, so it must have a real value for
+    # every signal (no era-NULL) — every slider starts sane for a first visitor.
     healthy = serve._PRESETS["healthy"]
-    for name, meta in serve._SIGNAL_META.items():
-        v = healthy[name]
-        assert meta["min"] <= v <= meta["max"], f"{name}={v} outside [{meta['min']},{meta['max']}]"
+    assert all(healthy[s] is not None for s in features.FEATURE_COLUMNS)
+
+
+def test_signal_ranges_bracket_every_preset_value() -> None:
+    # Every friendly [min, max] range must contain each preset's (non-null) value, or a
+    # one-click preset would silently clamp — the exact bug that made presets read ~0%.
+    for pname, row in serve._PRESETS.items():
+        for name, meta in serve._SIGNAL_META.items():
+            v = row[name]
+            if v is None:  # era-NULL: no slider value to bracket
+                continue
+            assert meta["min"] <= v <= meta["max"], (
+                f"preset {pname}: {name}={v} outside [{meta['min']},{meta['max']}]"
+            )
 
 
 # --- persistence to the managed DB (the F7 gate-relevant half) ----------------

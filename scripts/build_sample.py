@@ -7,6 +7,17 @@ training set — the real pipeline always regenerates the *full* dataset from
 honestly representative, it is built by *reducing the very same canonical config*
 (fewer units, a coarser stride), never an independently-parameterized run.
 
+**Multi-mode coverage (ADR-019).** The demo model baked into the hosted image trains
+on THIS fixture, so the fixture must contain every failure mode the generator models
+(``overheat`` / ``oil_starve`` / ``bearing``) — otherwise the demo model silently
+learns only the mode that happened to survive the reduction, and the ``/demo`` presets
+for the missing modes score ~0. The unit sample is therefore **stratified by event
+mode** (a fixed quota per mode + some healthy units), not just by vehicle class, so
+all three signatures are always present. This does not touch the full dataset or the
+reported metric — it only makes the OFFLINE slice exercise every code path (rule 3).
+The full 90-day window is kept (unreduced), so each mode's pre-event degradation ramp
+is the real full-length one.
+
 Run from the repo root after ``pip install -e '.[generate]'``::
 
     python scripts/build_sample.py
@@ -16,22 +27,23 @@ Deterministic: same generator version + canonical config → byte-identical fixt
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 from can_telemetry_forge.config import load_config
+from can_telemetry_forge.labels import FAILURE_MODES
 from can_telemetry_forge.sim.simulate import simulate
 
 # The canonical training-dataset spec the full pipeline uses — the fixture is a
 # strict reduction of THIS, so it can never silently diverge from the real data.
 DATASET_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "dataset.json"
 
-# The fixture is the canonical config REDUCED on three axes (documented here so the
-# reduction is explicit and reproducible), preserving the fleet's structure (class
-# mix, era-NULL missingness, multi-mode labels) while staying well under ~1 MB:
-SAMPLE_DAYS = 14            # shorter window than the canonical 90d (fixture only)
-TIME_STRIDE = 12           # keep every 12th 5-min sample → ~hourly on disk
-SAMPLE_UNITS = 24          # stratified across vehicle classes, keeps class/era spread
+# The fixture REDUCES the canonical config on two axes (documented so the reduction is
+# explicit + reproducible), preserving the fleet's structure (class mix, era-NULL
+# missingness, ALL failure modes) while staying well under ~1 MB. The 90-day window is
+# NOT reduced — full-length degradation ramps make the demo model see real signatures.
+TIME_STRIDE = 30           # keep every 30th 5-min sample → ~2.5-h cadence on disk
+UNITS_PER_MODE = 8         # units to keep per failure mode (overheat/oil_starve/bearing)
+HEALTHY_UNITS = 10         # never-fail units, for the negative class + class spread
 
 # Columns the modelling layer (F1/F2) actually consumes: the J1939 signals + keys
 # + the labels. Drop the wide raw frame/anomaly bookkeeping the model never reads
@@ -55,27 +67,71 @@ KEEP_COLUMNS = [
 ]
 
 
-def _stratified_unit_sample(units, n: int, seed: int) -> list[str]:
-    """Pick ~``n`` unit_ids spread across vehicle classes (and thus eras), so the
-    tiny slice keeps the class mix and the era-NULL missingness structure."""
+def _unit_event_mode(readings) -> "dict[str, str]":
+    """Map each ``unit_id`` → its failure mode (``""`` if the unit never fails).
+
+    A unit fails in at most one mode (the earliest-sampled event wins, see
+    ``labels.failure.derive_unit_labels``), so the mode on any of its
+    ``failure_within_h == 1`` rows is the unit's event mode.
+    """
+    failing = readings.loc[readings["failure_within_h"] == 1, ["unit_id", "failure_mode"]]
+    by_unit = failing.groupby("unit_id")["failure_mode"].first().astype(str)
+    modes = dict.fromkeys(readings["unit_id"].unique(), "")
+    modes.update(by_unit.to_dict())
+    return modes
+
+
+def _mode_stratified_units(readings, units, seed: int) -> list[str]:
+    """Pick units so EVERY failure mode is represented, spread across vehicle classes.
+
+    Stratifies by *event mode* first — a fixed :data:`UNITS_PER_MODE` quota per mode in
+    :data:`FAILURE_MODES` plus :data:`HEALTHY_UNITS` never-fail units — and, within each
+    stratum, spreads the pick across vehicle classes so the class/era-NULL structure is
+    preserved. Deterministic (seeded), so the fixture stays byte-reproducible (rule 5).
+    """
     import numpy as np
 
     rng = np.random.default_rng(int(seed))
-    classes = units["vehicle_class_id"].unique()
-    per_class = max(1, n // len(classes))
-    picked: list[str] = []
-    for cls in classes:
-        ids = units.loc[units["vehicle_class_id"] == cls, "unit_id"].to_numpy()
-        take = min(per_class, len(ids))
-        picked.extend(rng.choice(ids, size=take, replace=False).tolist())
-    return sorted(picked)
+    mode_of = _unit_event_mode(readings)
+    unit_class = units.set_index("unit_id")["vehicle_class_id"].to_dict()
+
+    def _spread_pick(candidates: list[str], k: int) -> list[str]:
+        # Round-robin across classes (each class's units shuffled by the seed) so the
+        # quota is filled with as even a class spread as the pool allows.
+        by_class: dict[object, list[str]] = {}
+        for uid in sorted(candidates):
+            by_class.setdefault(unit_class.get(uid), []).append(uid)
+        for lst in by_class.values():
+            rng.shuffle(lst)
+        picked: list[str] = []
+        buckets = [by_class[c] for c in sorted(by_class, key=lambda c: str(c))]
+        while len(picked) < k and any(buckets):
+            for b in buckets:
+                if b:
+                    picked.append(b.pop())
+                    if len(picked) >= k:
+                        break
+        return picked
+
+    keep: list[str] = []
+    for mode in FAILURE_MODES:
+        cands = [u for u, m in mode_of.items() if m == mode]
+        picked = _spread_pick(cands, UNITS_PER_MODE)
+        if len(picked) < UNITS_PER_MODE:
+            raise SystemExit(
+                f"fixture: only {len(picked)} units fail with mode '{mode}' "
+                f"(need {UNITS_PER_MODE}); widen the fleet or lower UNITS_PER_MODE."
+            )
+        keep.extend(picked)
+    healthy = [u for u, m in mode_of.items() if m == ""]
+    keep.extend(_spread_pick(healthy, HEALTHY_UNITS))
+    return sorted(keep)
 
 
 def build() -> Path:
-    # Load the SAME canonical config the full pipeline uses, then reduce only the
-    # window (days) for the fixture — seed/resolution/horizon stay canonical.
-    canonical = load_config(DATASET_CONFIG)
-    cfg = replace(canonical, days=SAMPLE_DAYS)
+    # Load and use the SAME canonical config the full pipeline uses — the fixture keeps
+    # the full 90-day window (unreduced); only units + time-stride are reduced below.
+    cfg = load_config(DATASET_CONFIG)
     ds = simulate(cfg)
     df = ds.readings
 
@@ -85,15 +141,22 @@ def build() -> Path:
         print(f"note: columns not in this generator version, skipped: {missing}")
     slim = df[present].copy()
 
-    # 1) keep a stratified subset of units (reuse the canonical seed)
-    keep_units = _stratified_unit_sample(ds.units, SAMPLE_UNITS, cfg.seed)
+    # 1) keep a mode-stratified subset of units so ALL failure modes are present
+    #    (reuse the canonical seed for a reproducible pick)
+    keep_units = _mode_stratified_units(df, ds.units, cfg.seed)
     slim = slim[slim["unit_id"].isin(keep_units)].copy()
 
-    # 2) time-downsample to ~hourly by striding each unit's series (timestamp_h is
-    #    monotonic per unit), so the committed artifact stays tiny.
-    slim = slim.sort_values(["unit_id", "timestamp_h"])
-    keep_row = slim.groupby("unit_id").cumcount() % TIME_STRIDE == 0
-    slim = slim[keep_row].reset_index(drop=True)
+    # 2) time-downsample by striding each unit's series (timestamp_h is monotonic per
+    #    unit), so the committed artifact stays tiny. Compute the per-unit positional
+    #    index without groupby.cumcount (a numpy/pandas broadcast quirk on some builds):
+    #    after sorting by unit, each unit's rows are contiguous, so per-group arange
+    #    concatenation lines up with groupby.size()'s key-sorted order.
+    import numpy as np
+
+    slim = slim.sort_values(["unit_id", "timestamp_h"]).reset_index(drop=True)
+    grp_sizes = slim.groupby("unit_id", observed=True).size().to_numpy()
+    pos_within_unit = np.concatenate([np.arange(s) for s in grp_sizes])
+    slim = slim[pos_within_unit % TIME_STRIDE == 0].reset_index(drop=True)
 
     # Shrink the on-disk fixture: float32 for the signals, categoricals for the
     # low-cardinality label strings. This is a *smoke fixture only* — never the
@@ -108,10 +171,20 @@ def build() -> Path:
     out = Path(__file__).resolve().parents[1] / "data" / "sample_readings.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     slim.to_parquet(out, index=False, compression="zstd")
+
+    # Fail loud if any failure mode is missing — that is the exact defect this rewrite
+    # fixes (a single-mode fixture → a demo model that only knows one failure).
+    mode_counts = slim.loc[slim["failure_within_h"] == 1, "failure_mode"].astype(str).value_counts()
+    absent = [m for m in FAILURE_MODES if mode_counts.get(m, 0) == 0]
+    if absent:
+        raise SystemExit(f"fixture is missing failure mode(s): {absent} — coverage broke.")
+
     pos = int(slim["failure_within_h"].sum())
-    print(f"wrote {out}")
+    size_kb = out.stat().st_size / 1024
+    print(f"wrote {out}  ({size_kb:,.0f} KB)")
     print(f"  {len(slim):,} rows × {len(present)} cols · {slim['unit_id'].nunique()} units")
     print(f"  failure rows: {pos:,} ({pos / max(len(slim), 1):.1%})")
+    print(f"  by mode: {dict(mode_counts)}")
     return out
 
 

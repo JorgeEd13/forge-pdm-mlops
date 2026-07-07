@@ -12,7 +12,7 @@ import mlflow
 import pytest
 from mlflow.tracking import MlflowClient
 
-from pdm_mlops import config, data, train
+from pdm_mlops import config, data, sequence, train
 
 
 # The default seed (42) holds out fixture units that happen to have zero failures, so
@@ -107,12 +107,17 @@ def test_train_defaults_to_data_loader_when_no_readings(monkeypatch, tmp_trackin
 
 
 def test_degenerate_fixture_split_is_rejected(fixture_readings, tmp_tracking) -> None:
-    # Seed 42 holds out fixture units with no failures → single-class test set →
+    # A unit-grouped split can hold out only never-fail units → single-class test set →
     # ROC-AUC undefined. train() must fail loudly, not log a meaningless nan metric.
+    # We construct that condition deterministically (one failing unit + several healthy
+    # ones, seed 0) rather than lean on a fixture quirk: the multi-mode fixture is now
+    # class-rich at every seed (ADR-019), so no seed triggers it on the full fixture.
+    group = sequence.GROUP_COLUMN
+    fails = fixture_readings.loc[fixture_readings[config.TARGET] == 1, group].unique().tolist()
+    healthy = [u for u in fixture_readings[group].unique() if u not in fails]
+    degenerate = fixture_readings[fixture_readings[group].isin(fails[:1] + healthy[:6])]
     with pytest.raises(train.DegenerateSplit):
-        train.train(
-            seed=42, tracking_uri=tmp_tracking, readings=fixture_readings, register=False
-        )
+        train.train(seed=0, tracking_uri=tmp_tracking, readings=degenerate, register=False)
 
 
 # --- F2.6: tuned params + watchers flow through train() ---------------------

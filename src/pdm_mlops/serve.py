@@ -530,58 +530,81 @@ def config_version() -> str:
 # only the presentation is friendly. i18n localizes label+tooltip on top of this.
 _SIGNAL_META: dict[str, dict[str, object]] = {
     "engine_speed_rpm": {"unit": "rpm", "min": 600, "max": 2500, "step": 10},
-    "coolant_temp_c": {"unit": "°C", "min": 60, "max": 130, "step": 1},
-    "oil_pressure_kpa": {"unit": "kPa", "min": 100, "max": 550, "step": 5},
+    "coolant_temp_c": {"unit": "°C", "min": 60, "max": 160, "step": 1},
+    "oil_pressure_kpa": {"unit": "kPa", "min": 0, "max": 550, "step": 5},
     "engine_load_pct": {"unit": "%", "min": 0, "max": 100, "step": 1},
-    "fuel_rate_lph": {"unit": "L/h", "min": 0, "max": 80, "step": 1},
+    "fuel_rate_lph": {"unit": "L/h", "min": 0, "max": 220, "step": 1},
     "boost_pressure_kpa": {"unit": "kPa", "min": 0, "max": 300, "step": 5},
-    "egt_c": {"unit": "°C", "min": 200, "max": 750, "step": 5},
+    "egt_c": {"unit": "°C", "min": 200, "max": 760, "step": 5},
     "def_level_pct": {"unit": "%", "min": 0, "max": 100, "step": 1},
-    "vibration_mms": {"unit": "mm/s", "min": 0, "max": 20, "step": 0.1},
+    "vibration_mms": {"unit": "mm/s", "min": 0, "max": 30, "step": 0.1},
 }
 
 # One-click preset rows so a tester can try a "healthy" or a "failing" machine in a
 # single click, without knowing what a plausible value is (the biggest UX win, F9.1).
-# These are illustrative operating points, NOT fixture rows — the demo is about the
-# wired endpoint, never a reported number. "healthy" doubles as the seed values.
-_PRESETS: dict[str, dict[str, float]] = {
-    "healthy": {
-        "engine_speed_rpm": 1800,
-        "coolant_temp_c": 92,
-        "oil_pressure_kpa": 320,
-        "engine_load_pct": 65,
-        "fuel_rate_lph": 24,
-        "boost_pressure_kpa": 150,
-        "egt_c": 480,
-        "def_level_pct": 55,
-        "vibration_mms": 3.2,
+#
+# One preset per failure mode the generator models (overheat / oil_starve / bearing),
+# so the demo shows real, distinct probabilities across the modes the baked model was
+# trained on — see ADR-019. Each "failing" preset is grounded in a REAL near-event
+# operating point from the multi-mode smoke fixture (the exact row the baked model
+# scores near-1 for that mode), lightly rounded; "healthy" is a plausible loaded-but-
+# fine machine the model scores near-0. They are illustrative operating points for the
+# *wired endpoint*, never a reported number (the ≈0.82 metric is the full-data model).
+#
+# ``oil_starve`` deliberately leaves egt/def/vibration as ``None`` (era-NULL): in this
+# fleet oil-starvation strikes an older equipment era that physically lacks those
+# sensors, so a faithful oil-starve row has them blank — a legitimate model input
+# (era-NULL, ADR-008 upstream). The demo form clears those fields for this preset.
+_PRESETS: dict[str, dict[str, float | None]] = {
+    "healthy": {  # a loaded machine running normally — model scores this ~0
+        "engine_speed_rpm": 1500,
+        "coolant_temp_c": 88,
+        "oil_pressure_kpa": 340,
+        "engine_load_pct": 55,
+        "fuel_rate_lph": 90,
+        "boost_pressure_kpa": 140,
+        "egt_c": 470,
+        "def_level_pct": 80,
+        "vibration_mms": 4,
     },
-    "bearing": {  # a failing bearing: high vibration + creeping oil pressure loss
-        "engine_speed_rpm": 1850,
-        "coolant_temp_c": 95,
-        "oil_pressure_kpa": 210,
-        "engine_load_pct": 70,
-        "fuel_rate_lph": 26,
-        "boost_pressure_kpa": 150,
-        "egt_c": 500,
-        "def_level_pct": 50,
-        "vibration_mms": 11.5,
+    "overheat": {  # thermal event: coolant + EGT high under load
+        "engine_speed_rpm": 1700,
+        "coolant_temp_c": 137,
+        "oil_pressure_kpa": 275,
+        "engine_load_pct": 79,
+        "fuel_rate_lph": 136,
+        "boost_pressure_kpa": 190,
+        "egt_c": 659,
+        "def_level_pct": 13,
+        "vibration_mms": 12.6,
     },
-    "overheat": {  # thermal event: coolant + EGT high, oil pressure sagging
-        "engine_speed_rpm": 1900,
-        "coolant_temp_c": 118,
-        "oil_pressure_kpa": 240,
+    "oil_starve": {  # oil pressure collapsing under load (older era: no egt/def/vib)
+        "engine_speed_rpm": 1860,
+        "coolant_temp_c": 123,
+        "oil_pressure_kpa": 55,
         "engine_load_pct": 88,
-        "fuel_rate_lph": 34,
-        "boost_pressure_kpa": 180,
-        "egt_c": 660,
-        "def_level_pct": 40,
-        "vibration_mms": 4.5,
+        "fuel_rate_lph": 168,
+        "boost_pressure_kpa": 171,
+        "egt_c": None,
+        "def_level_pct": None,
+        "vibration_mms": None,
+    },
+    "bearing": {  # mechanical wear: high vibration under load
+        "engine_speed_rpm": 1614,
+        "coolant_temp_c": 103.6,
+        "oil_pressure_kpa": 228,
+        "engine_load_pct": 66,
+        "fuel_rate_lph": 115,
+        "boost_pressure_kpa": 100,
+        "egt_c": 523,
+        "def_level_pct": 20,
+        "vibration_mms": 20.2,
     },
 }
 
 # The healthy preset is the form's seed (a first visitor can hit Predict immediately).
-_DEMO_SEED: dict[str, float] = _PRESETS["healthy"]
+# It is fully populated (no era-NULL), so every slider starts with a sane value.
+_DEMO_SEED: dict[str, float | None] = _PRESETS["healthy"]
 
 
 def _render_demo_page(
@@ -661,8 +684,9 @@ _DEMO_I18N: dict[str, dict[str, object]] = {
         ),
         "presetsLabel": "Try an example:",
         "presetHealthy": "Healthy engine",
-        "presetBearing": "Failing bearing",
         "presetOverheat": "Overheating",
+        "presetOilStarve": "Oil starvation",
+        "presetBearing": "Failing bearing",
         "predict": "Predict",
         "scoring": "scoring…",
         "failureProb": "Failure probability",
@@ -758,8 +782,9 @@ _DEMO_I18N: dict[str, dict[str, object]] = {
         ),
         "presetsLabel": "Teste um exemplo:",
         "presetHealthy": "Motor saudável",
-        "presetBearing": "Rolamento falhando",
         "presetOverheat": "Superaquecimento",
+        "presetOilStarve": "Falta de óleo",
+        "presetBearing": "Rolamento falhando",
         "predict": "Prever",
         "scoring": "pontuando…",
         "failureProb": "Probabilidade de falha",
@@ -969,8 +994,9 @@ _DEMO_TEMPLATE = """<!doctype html>
   <div class="presets">
     <span class="label" data-i18n="presetsLabel"></span>
     <button class="preset" data-preset="healthy" data-i18n="presetHealthy"></button>
-    <button class="preset" data-preset="bearing" data-i18n="presetBearing"></button>
     <button class="preset" data-preset="overheat" data-i18n="presetOverheat"></button>
+    <button class="preset" data-preset="oil_starve" data-i18n="presetOilStarve"></button>
+    <button class="preset" data-preset="bearing" data-i18n="presetBearing"></button>
   </div>
 
   <form id="f">
@@ -1079,8 +1105,10 @@ _DEMO_TEMPLATE = """<!doctype html>
   }}
   function fillPreset(name) {{
     const row = PRESETS[name]; if (!row) return;
+    // A null preset value is era-NULL (a sensor this equipment era lacks) — clear the
+    // field so the form submits null, a legitimate model input, instead of a stale value.
     for (const el of document.querySelectorAll('#fields input'))
-      if (row[el.name] !== undefined) el.value = row[el.name];
+      if (row[el.name] !== undefined) el.value = row[el.name] === null ? '' : row[el.name];
   }}
 
   document.getElementById('themeBtn').addEventListener('click', () => {{

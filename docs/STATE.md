@@ -1,8 +1,25 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-05 (session: **F8 bring-your-own-data demo — DONE**, ADR-017)
+Updated: 2026-07-06 (session: **multi-mode fixture + preset fix — DONE**, ADR-019)
 
 ## Current focus
+
+**Session 2026-07-06 (notebook) — multi-mode demo fixture + grounded presets — DONE (ADR-019).**
+Jorge caught the `/demo` presets all reading ~0.00% on the LIVE Cloud Run endpoint. Root cause:
+the committed smoke fixture had only **one** failure mode (`oil_starve`), so the baked demo model
+never learned overheat/bearing and correctly scored those presets near zero. **NOT the model or
+the deploy** — the full-data ≈0.82 model always trains on all three modes; only the offline slice
+was single-mode. Fix (ADR-019): (1) `build_sample.py` now **stratifies the fixture by event mode**
+(quota per mode + healthy units, full 90-day window kept) and fails loud if a mode is missing →
+~29k rows / 34 units / ≈940 KB, all three modes present; (2) each preset is now **grounded in a
+real near-event fixture row** and validated against a freshly-baked model — **healthy 0.04% ·
+overheat 99.2% · oil_starve 99.1% · bearing 99.7%**; (3) the `oil_starve` preset keeps its
+era-NULL fields blank (older sensor era), the form clears them, and slider ranges were widened to
+fit every preset. Full offline suite green (incl. two fixture-shape assumptions updated). Rebuilt
+the image + **redeployed to Cloud Run (rev … F9+multi-mode), pushed to GitHub, redeployed to the
+HF Space** so all three targets carry the same demo model. Honest boundary intact (`demo=fixture`).
+Follow-ups still open: **per-mode AUC** as a recorded metric (ceiling `by_mode` already computes it)
+and a **plan for adding more failure modes** to `can-telemetry-forge`.
 
 **Session 2026-07-06 — F9 (demo product-polish) is DONE (ADR-018).** The `/demo` page was too
 technical (nine raw J1939 fields, bare-float result, one theme, English only); F9 makes it

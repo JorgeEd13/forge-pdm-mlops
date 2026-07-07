@@ -46,8 +46,17 @@ def test_ttf_finite_exactly_on_positives(readings):
 def test_ttf_within_label_horizon(readings):
     ttf = ceiling.time_to_failure(readings)
     finite = ttf[np.isfinite(ttf)]
-    # Every positive row is at most the label horizon (168 h) from its failure event.
-    assert finite.max() <= 168.0 + 1e-6
+    # Every positive row is at most the label horizon (168 h) from its failure event —
+    # plus at most one fixture time-stride of slack, since the event time is estimated
+    # as "one stride past the last positive row" and the committed fixture is
+    # time-downsampled (build_sample.py). ttf is diagnostic-only (bucketing), never a
+    # feature, so this coarse-grid slack is harmless.
+    ts = readings[sequence.TIME_COLUMN].to_numpy(dtype="float64")
+    units = readings[sequence.GROUP_COLUMN].to_numpy()
+    order = np.lexsort((ts, units))
+    steps = np.diff(ts[order])[units[order][1:] == units[order][:-1]]
+    stride = float(steps[steps > 0].min())
+    assert finite.max() <= 168.0 + stride + 1e-6
 
 
 # --------------------------------------------------------------------------- #
