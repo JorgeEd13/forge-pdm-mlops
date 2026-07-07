@@ -179,6 +179,23 @@ def test_signal_ranges_bracket_every_preset_value() -> None:
             )
 
 
+def test_preset_values_align_to_signal_step() -> None:
+    # A <input type=number> flags a value that is off its `step` grid as invalid, so a
+    # one-click preset that fills e.g. 171 into a step-5 field lands a non-permitted value.
+    # Every non-null preset value must be an exact multiple of its signal's step.
+    for pname, row in serve._PRESETS.items():
+        for name, meta in serve._SIGNAL_META.items():
+            v = row[name]
+            step = meta.get("step")
+            if v is None or step in (None, "any"):
+                continue
+            # work in integer step-units to dodge float noise (e.g. 12.6 / 0.1)
+            units = round(v / step)
+            assert abs(v - units * step) < 1e-9, (
+                f"preset {pname}: {name}={v} is off the step grid (step={step})"
+            )
+
+
 # --- persistence to the managed DB (the F7 gate-relevant half) ----------------
 
 

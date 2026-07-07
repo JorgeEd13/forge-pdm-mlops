@@ -19,6 +19,12 @@ fit every preset. Full offline suite green (incl. two fixture-shape assumptions 
 the image + **redeployed to Cloud Run + pushed to GitHub + redeployed to the HF Space**; all three
 targets verified serving the same demo model (healthy 0.04% / overheat 99.2% / oil_starve 99.1% /
 bearing 99.7%). Honest boundary intact (`demo=fixture`).
+>
+> **Follow-up (same day) — preset step-alignment.** Jorge caught that some preset values were off
+> their input `step` grid (e.g. oil_starve boost 171 in a step-5 field, bearing rpm 1614 in step-10)
+> → `<input type=number>` flags them invalid. Snapped every preset value to its grid (scores
+> unchanged: 0.04 / 99.2 / 99.1 / 99.7) and added `test_preset_values_align_to_signal_step` so it
+> can't regress. Rebuilt + redeployed all three targets.
 
 > **Per-mode AUC (recorded 2026-07-06, `pdm ceiling` on the full 90-day data, seed 42).** The
 > headline **overall held-out ROC-AUC = 0.8125** is an average that hides real per-mode spread —
