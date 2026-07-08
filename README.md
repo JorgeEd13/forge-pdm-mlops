@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://jorgeed-forge-pdm-mlops.hf.space/health"><img src="https://img.shields.io/badge/live%20demo-%2Fhealth-brightgreen?logo=huggingface&logoColor=white" alt="Live demo — /health"></a>
   <a href="https://forge-pdm-mlops-958199756179.us-central1.run.app/demo"><img src="https://img.shields.io/badge/managed%20cloud-Cloud%20Run%20%2B%20Neon-4285F4?logo=googlecloud&logoColor=white" alt="Managed cloud — Cloud Run + Neon"></a>
-  <img src="https://img.shields.io/badge/status-F0%E2%80%93F8%20complete-success" alt="Status: F0–F8 complete">
+  <img src="https://img.shields.io/badge/status-F0%E2%80%93F9%20complete-success" alt="Status: F0–F9 complete">
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/tracking%20%2B%20registry-MLflow-0194E2" alt="MLflow tracking + registry">
