@@ -1,8 +1,25 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-06 (session: **multi-mode fixture + preset fix — DONE**, ADR-019)
+Updated: 2026-07-10 (session: **Epoch-2 plan drafted** — per-vehicle multi-label report + interactive demo + K8s/IaC gates)
 
 ## Current focus
+
+**► ACTIVE PLAN — Epoch 2 (F10–F17): [`docs/EPOCH2_PLAN.md`](EPOCH2_PLAN.md).** Read that doc's
+**§1 Locked decisions** before touching any Epoch-2 phase — it captures the irrecoverable reasoning
+(why the sequence contender re-opens despite F2.7; committee-of-specialists; independent multi-mode
+labels + the leakage subtlety; per-vehicle/region features = the report; optional enrichment;
+GPU-train/CPU-serve; the $0 envelope; honesty boundaries). This closes the STATE follow-up "plan for
+adding more failure modes" (below) and the **K8s + IaC gates** (F16/F17, which depend on F14's
+multi-service topology). Compute is **notebook-only** now (see career memory `resources_compute`).
+
+- **Next concrete step:** **F10 opener** — draft the failure taxonomy (EPOCH2_PLAN §2) grounded in
+  can-telemetry-forge's actual signal spec (each candidate mode → observable channel + feasible
+  signature + leakage note), then prune bucket-2 and flip the forge to independent per-mode labels.
+- **Sequencing:** product-first F10→F11→F12→F13→F14→F15→F16→F17, one phase/session. F16/F17 need F14.
+- **ADR numbering reserved:** forge-pdm from **ADR-020**, can-telemetry-forge from **ADR-021** (map in
+  EPOCH2_PLAN §1).
+
+---
 
 **Session 2026-07-06 (notebook) — multi-mode demo fixture + grounded presets — DONE (ADR-019).**
 Jorge caught the `/demo` presets all reading ~0.00% on the LIVE Cloud Run endpoint. Root cause:
