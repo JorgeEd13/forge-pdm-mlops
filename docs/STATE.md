@@ -829,7 +829,7 @@ enabled).
 **Career-system propagation — DONE this session (2026-07-04):** the managed-cloud gate was
 **flipped to closed** in `PERFIL_TECNICO.md` (honest nuance kept: Cloud Run serverless-managed ≠
 operating a K8s cluster, which remains the one open cloud sub-gate); the **achado** was recorded
-in `achados/forge-pdm-mlops.md` (F7-LIVE entry, with the psycopg/graceful-degrade lesson); and
+in my private engineering-findings log (F7-LIVE entry, with the psycopg/graceful-degrade lesson); and
 `APROFUNDAMENTOS.md` (#37), `POSTS.md` (F7 "$0 managed-cloud gate" + F7-b "healthy endpoint, DB
 wrote nothing"), and `README_GITHUB.md` (F7 card + F0–F7 status) were updated.
 

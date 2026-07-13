@@ -77,7 +77,7 @@ narrative: *built the data engine, then the ML-in-production system on top of it
 
 Career-showcase repo. When something genuinely CV/post-worthy appears (a clean MLOps
 technique, a shipped capability, a number), note it for
-`(private career repo)` — even unprompted. Sanitize to the public level
+my private engineering-findings log — even unprompted. Sanitize to the public level
 (it is already clean-room; tools/methods are free to name).
 
 ## Definition of done (per feature)
