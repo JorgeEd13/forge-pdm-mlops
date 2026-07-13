@@ -5,7 +5,7 @@
 The 4th public showcase, built to close the **MLOps-in-production gate** (experiment
 tracking, model registry, serving, drift monitoring, orchestration) with a navigable,
 clickable artifact instead of a claimed "interest". It is the downstream half of the
-[`can-telemetry-forge`](../can-telemetry-forge) narrative: *built the data engine,
+[`can-telemetry-forge`](https://github.com/JorgeEd13/can-telemetry-forge) narrative: *built the data engine,
 then the ML-in-production system over it.* The marquee is a **closed drift →
 auto-retrain loop** — the generator's `season` knob shifts the distribution, the
 pipeline detects it and retrains a recovered model.
