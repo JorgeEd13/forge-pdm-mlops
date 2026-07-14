@@ -47,6 +47,40 @@ page polls, then browses the data and shows **one risk score per vehicle**.
   **20 vehicles × 7 days**, and the report claims *"which vehicles built toward a failure **during
   this window**"* — the forge only samples events *inside* the window, so "will it fail next week"
   has **no ground truth** and is not a claim this demo may make.
+- **VERIFIED LIVE on Cloud Run + Neon (2026-07-14).** A real generation — 12 vehicles × 7 days —
+  kicked off from the deployed API, ran on the **Cloud Run Job**, stored **24,192 readings** in Neon,
+  and rendered the per-vehicle report:
+
+  ```
+  model=v1  demo=True  scored=24,192 rows
+  flagged 3 of 12 vehicles @ risk >= 0.7
+    FLAG u0001  risk=0.996  peak=0.998  share=21%
+    FLAG u0009  risk=0.915  peak=0.989  share=6%
+    FLAG u0010  risk=0.728  peak=0.962  share=27%
+         u0003  risk=0.680  peak=0.983  share=1%   <-- a `max` roll-up FLAGS this one
+         u0006  risk=0.644  peak=0.947  share=26%  <-- and this one
+  ```
+
+  **That output is the ADR-026 roll-up finding reproducing in production.** `u0003` peaks at **0.983**
+  on a single reading and is correctly *not* flagged (sustained risk 0.680); ranking on `max` — one of
+  the two rules §5 pre-registered — would flag it *and* `u0006`, turning a 3-of-12 report into
+  5-of-12. The kick-off POST answers **202 with `worker: cloudrun-job`**, and the `demo=fixture`
+  banner holds on the roll-up. **Honest caveat:** the worker is a cold-starting container carrying
+  LightGBM + MLflow + the forge, so `queued → running` takes **~1–2 min** on a cold Job. It is async
+  and nobody is blocked, but the demo is **not snappy** — do not describe it as if it were. (Job
+  cold-start is a candidate for the same `--cpu-boost` treatment the API got.)
+- **⚠ HF Space is NOT propagated — BLOCKED, and deliberately not forced.** `scripts/deploy_space.sh`
+  failed on `git lfs` **smudge**: `assets/logo.png` → *"Object does not exist on the server: [404]"*
+  when checking out `space-deploy`. The failed checkout left the working tree contaminated
+  (space-deploy content under a `main` HEAD, `Dockerfile.worker` showing as deleted); recovered with
+  `git reset --hard origin/main` — **the documented recovery for exactly this**, and the reason both
+  F14a commits were pushed *before* touching the Space. **Not forced, on purpose:** LFS surgery on
+  this repo has contaminated `main` twice before, and the Space gains **nothing** from F14a anyway —
+  it has no `DATABASE_URL` and no worker, so generation there correctly reports itself unavailable.
+  The Space remains **live and healthy on the previous revision** (`/health` → `model_loaded:true`).
+  **To resume:** the LFS object is missing/unauthorized on the HF remote — check `huggingface-cli
+  login` / the LFS credentials, or re-push the object; `GIT_LFS_SKIP_SMUDGE=1` gets the checkout
+  through but do **not** push a branch whose LFS objects the server cannot resolve.
 - **⚠ Deploy bug, found on the first real build of the worker image (fixed) — a CONTAINER-ONLY defect,
   same class as the three F6 hit.** The build died on `No matching distribution found for
   can-telemetry-forge==0.2.0`: **the generator is not on PyPI** — it is the companion repo, installed
