@@ -1,0 +1,53 @@
+# The generation worker's image (F14a, ADR-026) — the SECOND deployable unit.
+#
+# This is the container the Cloud Run **Job** runs. It is a different image from the
+# serving one on purpose, and the difference is the point of decision S2: the API and the
+# worker are two units with two lifecycles, two scaling behaviours and — visible right
+# here — two dependency surfaces.
+#
+#   serving image (Dockerfile.hf) : [serve,cloud]    — FastAPI + the baked demo registry.
+#                                                      Long-lived, request-scoped, must be
+#                                                      warm. Does NOT install the forge.
+#   worker image  (this file)     : [cloud,generate] — the generator + the store. Runs once
+#                                                      per request, to completion, then dies.
+#                                                      No web server. No model.
+#
+# The worker does not score, and so does not carry MLflow artifacts or the demo registry:
+# the roll-up is computed by the API against whatever model is **promoted at read time**,
+# which is what keeps a promotion/rollback visible in the report with no redeploy
+# (ADR-008/ADR-009). Freezing a score into the store at generation time would quietly
+# break that, and it would have been the easy thing to do.
+#
+# Deployed by scripts/deploy_cloudrun_neon.sh (see also docs/DEPLOY.md); F17 codifies the
+# job — and the fact that it is a *second* resource is exactly what gives Terraform and
+# Kubernetes something real to describe.
+
+FROM python:3.12-slim
+
+# LightGBM (a core dependency, imported through pdm_mlops.features) needs libgomp.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 appuser
+ENV HOME=/home/appuser
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+# [generate] pins can-telemetry-forge — the SAME pin the training path uses (ADR-001), so a
+# fleet a user generates here is the same recipe the model was trained on, not a lookalike.
+RUN pip install --no-cache-dir ".[cloud,generate]"
+
+# The canonical dataset recipe. The demo generates a bounded SLICE of it (a smaller fleet,
+# a shorter window) — same seed discipline, same signals, same label horizon.
+COPY configs ./configs
+
+ENV GIT_PYTHON_REFRESH=quiet
+USER appuser
+
+# One run per execution, parametrised by the env overrides the API sends with the job
+# execution (RUN_ID / GENERATION_UNITS / GENERATION_DAYS / GENERATION_SEED). Exits
+# non-zero on failure, so a failed generation is a failed Cloud Run execution — visible in
+# the console, not only in the database.
+ENTRYPOINT ["pdm", "generate-run"]

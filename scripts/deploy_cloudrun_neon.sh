@@ -36,9 +36,11 @@ REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-forge-pdm-mlops}"
 REPO="${REPO:-forge-pdm}"                        # Artifact Registry repo
 SECRET_NAME="${SECRET_NAME:-forge-pdm-db-url}"   # Secret Manager: the DATABASE_URL
+JOB="${JOB:-forge-pdm-generate}"                 # Cloud Run Job: the generation worker (F14a)
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:latest"
+WORKER_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${JOB}:latest"
 
-echo "[deploy] project=${PROJECT_ID} region=${REGION} service=${SERVICE} (Neon backend)"
+echo "[deploy] project=${PROJECT_ID} region=${REGION} service=${SERVICE} job=${JOB} (Neon backend)"
 
 # --- 0. Normalise the Neon URL to the psycopg3 SQLAlchemy dialect -------------
 # Neon hands out `postgresql://…`; SQLAlchemy would pick psycopg2 for that scheme, but the
@@ -60,13 +62,24 @@ if ! gcloud artifacts repositories describe "${REPO}" --location "${REGION}" >/d
     --description "forge-pdm-mlops serving images"
 fi
 
-# --- 2. Build & push the image (Cloud Build — no local Docker daemon needed) ---
-# The self-contained bake image; the demo registry bakes at container startup.
+# --- 2. Build & push the images (Cloud Build — no local Docker daemon needed) ---
+# TWO images, because this is a web+worker system (F14a / ADR-026 decision S2), not one
+# container with a background thread:
+#   - the SERVICE image (Dockerfile.hf): FastAPI + the demo registry baked at startup.
+#   - the WORKER image (Dockerfile.worker): the generator + the store. No web server.
 echo "[deploy] building ${IMAGE} via Cloud Build (Dockerfile.hf)…"
 gcloud builds submit --substitutions "_IMAGE=${IMAGE}" --config /dev/stdin <<'YAML'
 steps:
   - name: gcr.io/cloud-builders/docker
     args: ["build", "-f", "Dockerfile.hf", "-t", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+YAML
+
+echo "[deploy] building ${WORKER_IMAGE} via Cloud Build (Dockerfile.worker)…"
+gcloud builds submit --substitutions "_IMAGE=${WORKER_IMAGE}" --config /dev/stdin <<'YAML'
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.worker", "-t", "${_IMAGE}", "."]
 images: ["${_IMAGE}"]
 YAML
 
@@ -83,10 +96,26 @@ gcloud secrets add-iam-policy-binding "${SECRET_NAME}" \
   --member "serviceAccount:${RUNTIME_SA}" \
   --role roles/secretmanager.secretAccessor >/dev/null
 
-# --- 4. Deploy the Cloud Run service ------------------------------------------
+# --- 4. The generation worker: a Cloud Run JOB (F14a / ADR-026 — decision S2) --
+# A Job, not a background task in the API: a genuinely separate deployable unit, with its
+# own image, its own lifecycle and its own scaling. It is free-tier eligible and scales to
+# zero — it exists only while a generation is running. The API starts an execution of it
+# with per-request env overrides (see jobs.CloudRunJobTrigger).
+echo "[deploy] deploying Cloud Run job ${JOB}…"
+JOB_ACTION="create"
+gcloud run jobs describe "${JOB}" --region "${REGION}" >/dev/null 2>&1 && JOB_ACTION="update"
+gcloud run jobs "${JOB_ACTION}" "${JOB}" \
+  --image "${WORKER_IMAGE}" \
+  --region "${REGION}" \
+  --set-secrets "DATABASE_URL=${SECRET_NAME}:latest" \
+  --cpu 1 --memory 1Gi --task-timeout 600 --max-retries 1
+
+# --- 5. Deploy the Cloud Run service ------------------------------------------
 # No --add-cloudsql-instances: Neon is reached over the public internet (egress is free).
 # DATABASE_URL is injected from the secret; Cloud Run injects $PORT (entrypoint honours it).
 # Public (unauthenticated) so the demo link is clickable; it only serves a demo model.
+# GENERATION_* tell the API which job to start — without them it honestly reports that
+# fleet generation is unavailable rather than quietly generating in-process.
 echo "[deploy] deploying Cloud Run service ${SERVICE}…"
 gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
@@ -94,10 +123,20 @@ gcloud run deploy "${SERVICE}" \
   --platform managed \
   --allow-unauthenticated \
   --set-secrets "DATABASE_URL=${SECRET_NAME}:latest" \
+  --set-env-vars "GENERATION_JOB=${JOB},GENERATION_PROJECT=${PROJECT_ID},GENERATION_REGION=${REGION}" \
   --cpu 1 --memory 1Gi --timeout 300 --min-instances 0
+
+# --- 6. Let the API start the job (and only that) ------------------------------
+# `run.invoker` on the JOB alone — the service account may start this one job, nothing
+# else. The API never needs to read or write the job's definition.
+gcloud run jobs add-iam-policy-binding "${JOB}" \
+  --region "${REGION}" \
+  --member "serviceAccount:${RUNTIME_SA}" \
+  --role roles/run.invoker >/dev/null
 
 URL="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)')"
 echo "[deploy] done."
 echo "[deploy] live:      ${URL}/health"
 echo "[deploy] demo page: ${URL}/demo"
 echo "[deploy] verify:    curl -s ${URL}/health   # (first hit cold-starts + bakes the demo — allow ~1-2 min)"
+echo "[deploy] worker:    gcloud run jobs executions list --job ${JOB} --region ${REGION}"

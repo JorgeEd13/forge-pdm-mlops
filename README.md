@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://forge-pdm-mlops-958199756179.us-central1.run.app/demo"><img src="https://img.shields.io/badge/▶%20try%20it%20live-interactive%20demo-4285F4?logo=googlecloud&logoColor=white" alt="Try it live"></a>
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
-  <img src="https://img.shields.io/badge/tests-169%20offline-success" alt="169 offline tests">
+  <img src="https://img.shields.io/badge/tests-202%20offline-success" alt="202 offline tests">
   <img src="https://img.shields.io/badge/data-100%25%20synthetic-blueviolet" alt="100% synthetic data">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
@@ -19,8 +19,10 @@
 
 ## ▶ Try it — no signup, no key
 
-**[Interactive demo](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo)** — score machine telemetry for failure risk, or upload your own CSV/Parquet.
+**[Interactive demo](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo)** — score machine telemetry for failure risk, upload your own CSV/Parquet, or **generate a synthetic fleet** and get one risk score per vehicle.
 Runs on **Google Cloud Run** with a **managed Neon Postgres** behind it, at **$0**.
+
+> Fleet generation is a **web + worker** system: the page kicks off a run and the API answers in ~16 ms, because the generator runs in a **separate Cloud Run Job** — not in a background thread on the serving container. A vehicle is flagged on **sustained** risk (the peak of a 1-hour rolling mean), not on its single worst reading: the generator injects sensor outliers on purpose, and ranking on the max flags healthy vehicles. Both choices are measured, not asserted — [ADR-026](docs/DECISIONS.md).
 
 Also live on Hugging Face Spaces: [`/health`](https://jorgeed-forge-pdm-mlops.hf.space/health) · [`/model-info`](https://jorgeed-forge-pdm-mlops.hf.space/model-info) · [`/docs`](https://jorgeed-forge-pdm-mlops.hf.space/docs)
 
@@ -192,9 +194,12 @@ The README is the tour. The substance lives in:
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — module design and data flow.
 - **[`docs/DECISIONS.md`](docs/DECISIONS.md)** — the ADRs: why aliases over stages, why a fixture
   is never a training set, why serving loads from a client-resolved path, and the rest.
-- **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — every phase (F0–F9) with objective and definition of
-  done, including the two deliberately **deferred** ones (RUL reframing, cross-dataset validation
-  on NASA C-MAPSS).
+- **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — every phase (F0–F9, plus Epoch 2) with objective and
+  definition of done, including the two deliberately **deferred** ones (RUL reframing, cross-dataset
+  validation on NASA C-MAPSS).
+- **[`docs/EPOCH2_PLAN.md`](docs/EPOCH2_PLAN.md)** — the current epoch: from one risk score to a
+  per-vehicle, multi-fault maintenance report. Its **§1 locked decisions** carry the reasoning that
+  a later session could otherwise quietly reverse.
 - **[`docs/DEPLOY.md`](docs/DEPLOY.md)** — the hosted and managed-cloud deploys.
 
 ---

@@ -139,6 +139,46 @@ era-`NULL`, so a **partial** dataset still scores ("N of 9 provided"). Bounded b
 cap; a non-J1939 or unparseable file is a clear 4xx, never a 500. **No uploaded row is stored** —
 the managed-DB posture stays "counts/summaries, never raw uploaded rows"; F8 writes nothing.
 
+**Generate-your-own-data (F14a, ADR-026) — the deploy grows a SECOND unit.** `/demo` can also
+**generate** a bounded synthetic fleet and score every vehicle in it. The important part is not the
+feature, it is the **shape**: generation runs in a **Cloud Run Job** — its own image
+(`Dockerfile.worker`, `.[cloud,generate]`), its own lifecycle, its own scaling — and *not* in a
+FastAPI `BackgroundTask` on the serving container (decision **S2**). The API only enqueues: it writes
+a `queued` run to Postgres, starts a job execution over the Cloud Run Admin API with the run's
+parameters as env overrides, and answers **202 in ~16 ms**; the page polls, then browses the stored
+fleet and shows the per-vehicle risk roll-up.
+
+So the deploy is now **two images and two Cloud Run resources**:
+
+| unit | image | extras | shape |
+|---|---|---|---|
+| API | `Dockerfile.hf` | `[serve,cloud]` | Cloud Run **service** — long-lived, request-scoped, warm |
+| generation worker | `Dockerfile.worker` | `[cloud,generate]` | Cloud Run **job** — runs once per request, to completion, then dies |
+
+Both read the **same** `DATABASE_URL` secret — the managed Postgres is the whole of their shared
+state; they never call each other in-process. The API is granted `run.invoker` **on that one job**,
+nothing else. `deploy_cloudrun_neon.sh` does all of it (`JOB=forge-pdm-generate` by default).
+
+The free-tier envelope is enforced at the door, not by hoping: a request over the caps (30 vehicles ·
+14 days · **200 unit-days**) is a **400** naming the bound, and stored rows are retained to a budget
+(200k rows ≈ 86 MB of Neon's free 0.5 GB) with the oldest runs evicted — a public generate endpoint
+with no retention is a database that fills up and takes the prediction log down with it. Without
+`GENERATION_JOB`/`GENERATION_PROJECT`/`GENERATION_REGION`, the API reports honestly that fleet
+generation is unavailable (503) rather than quietly generating in-process; the rest of the demo is
+unaffected (so HF Spaces and a local `pdm serve` are untouched).
+
+> **Local development.** There is no Cloud Run on a laptop, so `GENERATION_LOCAL_WORKER=1` makes the
+> API spawn the same `pdm generate-run` entry point as a detached **subprocess**. Be precise about
+> what that is: the API process still never runs the forge (a test asserts it), but one host with two
+> processes is **not** two deployable units — do not read a local demo as evidence for the deployed
+> topology.
+>
+> ```bash
+> export DATABASE_URL="sqlite:///$PWD/gen.db"   # any SQLAlchemy URL; Neon in the cloud
+> export GENERATION_LOCAL_WORKER=1
+> pdm serve                                     # → /demo now offers "Generate your own fleet"
+> ```
+
 ### Reference deploy — Cloud Run + Neon (free)
 
 **One-time setup:**

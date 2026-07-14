@@ -12,6 +12,7 @@ The subcommand surface mirrors the roadmap; each phase fills one in:
     pdm serve     # F4  — FastAPI serving the promoted model (LIVE)
     pdm monitor   # F5  — an Evidently drift report + decision, baseline vs. a season shift (LIVE)
     pdm flow      # F5  — the Prefect drift → retrain → gated-promote loop, the marquee (LIVE)
+    pdm generate-run  # F14a — the generation WORKER: run one queued fleet (the Cloud Run Job)
 
 Unimplemented stubs exit non-zero with a pointer to the phase that lands them, so
 the command stays honest about what is and isn't wired yet.
@@ -162,6 +163,19 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_p.add_argument(
         "--season", default=None, help="generator season used as the drift stimulus"
     )
+
+    # The generation worker's entry point (F14a). This is what the Cloud Run Job runs —
+    # the *only* process that executes the forge. Arguments double as env overrides
+    # (RUN_ID / GENERATION_UNITS / GENERATION_DAYS / GENERATION_SEED) because that is how
+    # a job execution is parametrised.
+    gen_p = sub.add_parser(
+        "generate-run",
+        help="worker: generate one bounded fleet for a queued run and store it (F14a)",
+    )
+    gen_p.add_argument("--run-id", default=None, help="the queued run to execute (env RUN_ID)")
+    gen_p.add_argument("--units", type=int, default=None, help="fleet size")
+    gen_p.add_argument("--days", type=int, default=None, help="window length in days")
+    gen_p.add_argument("--seed", type=int, default=None, help="generation seed")
     return parser
 
 
@@ -297,6 +311,19 @@ def main(argv: list[str] | None = None) -> int:
         report = _monitor.detect_drift(season=args.season)
         print(report.summary())
         return 0 if report.drifted else 1
+    if args.command == "generate-run":
+        from . import generate as _generate
+        from . import worker as _worker
+
+        # An explicit flag wins; anything omitted falls back to the job's env override.
+        spec = None
+        if args.units is not None or args.days is not None or args.seed is not None:
+            spec = _generate.GenerationSpec(
+                n_units=args.units if args.units is not None else _generate.DEFAULT_UNITS,
+                days=args.days if args.days is not None else _generate.DEFAULT_DAYS,
+                seed=args.seed if args.seed is not None else 42,
+            )
+        return _worker.main(args.run_id, spec)
     parser.print_help()
     return 0
 

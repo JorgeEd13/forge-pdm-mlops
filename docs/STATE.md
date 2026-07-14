@@ -1,6 +1,6 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-14 (session: **Epoch-2 RESEQUENCED** — F14 splits, its topology half leads; F17 before F16. No code yet.)
+Updated: 2026-07-14 (session: **F14a SHIPPED** — the web/worker split is real; F17 is next.)
 
 ## Current focus
 
@@ -8,45 +8,54 @@ Updated: 2026-07-14 (session: **Epoch-2 RESEQUENCED** — F14 splits, its topolo
 **§1 Locked decisions** before touching any Epoch-2 phase — it captures the irrecoverable reasoning
 (why the sequence contender re-opens despite F2.7; committee-of-specialists; independent multi-mode
 labels + the leakage subtlety; per-vehicle/region features = the report; optional enrichment;
-GPU-train/CPU-serve; the $0 envelope; honesty boundaries; **and now S1/S2, the sequencing**). This
-closes the STATE follow-up "plan for adding more failure modes" (below) and the **K8s + IaC gates**
-(F16/F17). Compute is **notebook-only** now (see career memory `resources_compute`).
+GPU-train/CPU-serve; the $0 envelope; honesty boundaries; and **S1/S2**, the sequencing).
+Execution order: **~~F14a~~ → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**, one phase/session.
+Compute is **notebook-only** (career memory `resources_compute`).
 
-**Session 2026-07-14 — the Epoch-2 back half was RESEQUENCED (planning only; no code).** Two calls,
-both recorded as locked decisions in EPOCH2_PLAN §1 so a future session can't quietly revert them:
+**Session 2026-07-14 — F14a (generate-your-own-data: the topology) is DONE (ADR-026).** The system
+is now genuinely **two deployable units**, which is the thing F17 and F16 were blocked on — not the
+report. A user sets a fleet size + window on `/demo`, the API answers **202 in ~16 ms**, a **Cloud
+Run Job** (a different image, `Dockerfile.worker`) generates the fleet and writes it to Neon, the
+page polls, then browses the data and shows **one risk score per vehicle**.
 
-- **S1 — F14 splits, and its topology half leads.** F16/F17 are blocked on F14's **multi-service
-  topology**, not on its report — and that topology half depends on **nothing** in F10–F13 (the
-  forge exists at 0.2.0, the API is live on Cloud Run, the Neon store is live). So **F14a**
-  (co-deploy the forge · bounded async generation · capped store · browse · per-vehicle risk
-  roll-up scored by *today's* single-label demo model) ships **first**, and **F14b** (the
-  multi-label narrative report) ships after F12. The old "product-first" ordering put the two open
-  gates — the stated reason Epoch 2 *has* a back half — five sessions behind four phases of
-  *modelling* work that closes neither. **Knowingly paid cost:** the report renderer twice, and
-  maybe the stored schema once — both confined to the presentation layer. *(§3's "Sequencing is
-  product-first" preamble was a map, not a locked decision; no D-numbered decision required it.)*
-- **S2 — the generation worker is a SEPARATE DEPLOYABLE UNIT** (Cloud Run Job / a second service),
-  **not** a FastAPI `BackgroundTask`. This resolves the §5 open question and is **the** load-bearing
-  choice of the whole back half: a `BackgroundTask` leaves the system as *one container*, which
-  would make F16 textbook resume-driven development and leave F17 with one resource to codify. A
-  real web+worker split maps to Deployment+Job on `kind` and gives Terraform a second real resource
-  — and costs **$0** (Cloud Run Jobs are free-tier eligible).
-- **F17 runs before F16.** Terraform is justified **by the project** (F7 shipped imperative —
-  `deploy_cloudrun_neon.sh` is a sequence someone ran once; no source of truth to diff, recreate, or
-  destroy: a real, nameable defect). K8s is justified **by the market** (a hard JD requirement) and
-  is honestly *overkill here* — Cloud Run stays the production answer. Enumerating the real
-  resources in HCL is also the direct input to the K8s manifests, so the dependency runs one way:
-  Terraform-first makes F16 cheaper; F16-first does nothing for F17. **K8s remains the #1 gate by
-  importance** — it goes second only because it gets cheaper after Terraform.
-
-- **Next concrete step:** **F14a opener** — resolve the caps (fleet/window/stored rows that fit Neon
-  0.5 GB + the Cloud Run request timeout) and the roll-up rule (max-over-rows vs. high-risk-share),
-  then build the kick-off → poll → view surface with generation in its **own** deployable unit (S2).
-- **Execution order:** **F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**, one phase/session.
-  Phase **IDs are stable** — only the order moved.
-- **ADR numbering:** forge-pdm from **ADR-020**, can-telemetry-forge from **ADR-021** (map in
-  EPOCH2_PLAN §1). D1–D7 pre-assign forge-pdm **020–025**; **ADR-026** is reserved for F14a
-  (topology + async-as-separate-unit + the S1 sequencing rationale).
+- **S2 shipped as written: generation is a separate deployable unit, not a `BackgroundTask`.** The
+  API never runs the forge — `jobs.py` is the whole boundary (it starts a Cloud Run Job execution
+  over the Admin API with stdlib `urllib` + the metadata-server token; no new dependency).
+  **`test_the_api_never_generates_in_process` is the test that fails if someone reaches for the
+  three-line `BackgroundTasks` version.** The two images have two dependency surfaces, which is the
+  split made visible: `[serve,cloud]` (FastAPI + baked demo registry, warm) vs `[cloud,generate]`
+  (the forge + the store, runs once, dies — no web server, no model).
+- **The worker deliberately does NOT score.** It stores raw readings; the API scores them at **read
+  time with whatever is promoted**, caching the roll-up per `(run, model version)`. Baking a score in
+  at generation time was the easy path and would have silently broken the property the registry
+  exists for (promote/rollback changes what is served, no redeploy — ADR-008/009). The cache key
+  *is* the invalidation. **Do not "optimize" this by scoring in the worker.**
+- **Both §5 open questions are RESOLVED — by measurement, and BOTH pre-registered candidates lost.**
+  Details in **ADR-026** (its owner — don't restate them elsewhere):
+  - **Caps** are a **storage** budget, not a timeout budget (a full run generates in ~1 s and scores
+    in ~0.2 s). 30 vehicles × 14 days, binding cap **200 unit-days**, 200k rows retained,
+    oldest-first eviction. Measured **~432 B/row** — my first ~300 B/row estimate was wrong and was
+    corrected against the measurement.
+  - **Roll-up** is the **peak of a 1-hour rolling mean** (unit ROC-AUC **0.983** on the full-data
+    model), beating `max` (0.951, ±0.060) and `high-risk-share` (0.864). **`max` loses
+    structurally**: it is a one-row statistic and the forge *deliberately injects outliers*, so one
+    spurious spike flags a healthy vehicle — reproduced live (a healthy unit peaking at 0.85 while
+    its sustained risk is 0.51). Verified on the **full-data** model, not just the demo one, so the
+    finding isn't a fixture artifact (that model reproduced its recorded 0.8125 exactly).
+- **An honest product constraint, found by measuring:** failures are hazard-sampled per step, so a
+  short window often contains **zero** events (3/30 vehicles at 7 days). Hence the default of
+  **20 vehicles × 7 days**, and the report claims *"which vehicles built toward a failure **during
+  this window**"* — the forge only samples events *inside* the window, so "will it fail next week"
+  has **no ground truth** and is not a claim this demo may make.
+- **Next concrete step: F17 (Terraform / IaC).** Its entry question is the **state backend** — local
+  gitignored state vs. a GCS free-tier bucket; the state file is secrets-adjacent (the Neon URL can
+  land in it in plaintext) and never goes in git. The resource list is no longer hypothetical:
+  `deploy_cloudrun_neon.sh` now creates **Artifact Registry · the API service · the generation Job ·
+  Secret Manager · two IAM bindings** (the API may `run.invoker` **that job alone**) — read the
+  script, don't re-derive it. F17's honest justification is unchanged: F7 shipped **imperative**, so
+  there is no source of truth to diff, recreate or destroy.
+- **ADR numbering:** forge-pdm D1–D7 still pre-assign **ADR-020–025** (unwritten — they land with
+  their phases); **ADR-026 is written** (F14a). can-telemetry-forge from **ADR-021**.
 
 ---
 

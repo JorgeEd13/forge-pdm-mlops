@@ -43,8 +43,10 @@ import numpy as np
 import pandas as pd
 
 from . import config, features
+from . import generate as _generate
+from . import jobs as _jobs
 from . import registry as _registry
-from . import store_pg
+from . import store_gen, store_pg
 from . import upload as _upload
 
 # FastAPI/pydantic are the [serve] extra — imported at module load so the app object
@@ -134,6 +136,82 @@ class UploadScoreResponse(BaseModel):
     failure_probability: list[float]
     summary: UploadSummary
     demo: bool
+
+
+class GenerateRequest(BaseModel):
+    """Ask the forge for a bounded synthetic fleet (F14a).
+
+    The caps live in :mod:`generate` (one owner) and are enforced by
+    :meth:`generate.GenerationSpec.validate`, not by Pydantic bounds here — the **worker**
+    validates the same spec independently, and a bound duplicated in two schemas is a bound
+    that will eventually disagree with itself.
+    """
+
+    n_units: int = Field(default=_generate.DEFAULT_UNITS, description="fleet size")
+    days: int = Field(default=_generate.DEFAULT_DAYS, description="window length in days")
+    seed: int = Field(default=config.DEFAULT_SEED, description="generation seed")
+
+
+class GenerationRunResponse(BaseModel):
+    """A generation run's state — the kick-off reply *and* the polling payload.
+
+    ``worker`` names the topology honestly: ``cloudrun-job`` is the deployed web/worker
+    split (decision S2); ``local-subprocess`` is the development stand-in. The API process
+    never generates in either case.
+    """
+
+    run_id: str
+    status: str
+    n_units: int
+    days: int
+    seed: int
+    n_rows: int
+    expected_rows: int
+    error: str | None = None
+    worker: str | None = None
+
+
+class GeneratedRows(BaseModel):
+    """A page of the generated fleet (the browse surface)."""
+
+    run_id: str
+    total_rows: int
+    offset: int
+    limit: int
+    columns: list[str]
+    rows: list[dict[str, object]]
+
+
+class UnitRiskOut(BaseModel):
+    """One vehicle's line in the per-vehicle risk roll-up."""
+
+    unit_id: str
+    n_rows: int
+    risk: float
+    peak: float
+    high_risk_share: float
+    flagged: bool
+
+
+class FleetReport(BaseModel):
+    """The per-vehicle risk roll-up over a generated fleet (F14a).
+
+    Deliberately the **existing single-label risk score**, rolled up per vehicle — the
+    multi-label narrative report ("press + engine flagged, because…") is F14b, after the
+    committee (F11) and the attribution features (F12) exist. ``demo`` restates that the
+    scoring model is the fixture-trained demo (ADR-001/ADR-014), exactly as ``/model-info``
+    and the upload response do.
+    """
+
+    run_id: str
+    model_version: str
+    demo: bool
+    n_units: int
+    n_flagged: int
+    n_rows_scored: int
+    flag_threshold: float
+    rollup_rule: str
+    units: list[UnitRiskOut]
 
 
 class ModelInfo(BaseModel):
@@ -286,6 +364,8 @@ def _to_frame(rows: list[dict[str, float | None]]) -> pd.DataFrame:
 def create_app(
     store: ModelStore | None = None,
     prediction_log: store_pg.PredictionLog | None = None,
+    generation_store: store_gen.GenerationStore | None = None,
+    job_trigger: _jobs.JobTrigger | None = None,
 ) -> FastAPI:
     """Build the serving app, optionally with an injected :class:`ModelStore`.
 
@@ -298,9 +378,19 @@ def create_app(
     :func:`store_pg.open_log`, which returns ``None`` unless ``DATABASE_URL`` is set — so
     a local ``pdm serve``, the HF Space, and CI all run **without** a database and the
     demo simply doesn't persist. Tests inject a log bound to a tmp SQLite file.
+
+    ``generation_store`` + ``job_trigger`` are the F14a generate-your-own-data pair, and
+    together they are the web half of the **web/worker split** (ADR-026 / decision S2): the
+    store is the shared state, the trigger starts the *other* deployable unit. Both default
+    to their env-driven openers and both are ``None`` when unconfigured — in which case the
+    generate endpoints answer an honest 503 and every other endpoint is untouched.
     """
     store = store or ModelStore()
     log = prediction_log if prediction_log is not None else store_pg.open_log()
+    gen_store = (
+        generation_store if generation_store is not None else store_gen.open_store()
+    )
+    trigger = job_trigger if job_trigger is not None else _jobs.open_trigger()
     app = FastAPI(
         title="forge-pdm-mlops serving",
         description="Serves the production-aliased failure classifier (F4).",
@@ -308,6 +398,8 @@ def create_app(
     )
     app.state.store = store
     app.state.prediction_log = log
+    app.state.generation_store = gen_store
+    app.state.job_trigger = trigger
 
     @app.get("/")
     def root() -> dict[str, object]:
@@ -323,10 +415,14 @@ def create_app(
             "~0.82 model is trained on the full dataset locally.",
             "endpoints": {
                 "GET /demo": "an interactive 'set parameters → get a prediction' page, "
-                "with a 'bring your own data' CSV/Parquet batch upload",
+                "with a 'bring your own data' CSV/Parquet batch upload and a "
+                "'generate your own fleet' run",
                 "GET /health": "liveness + whether a model is loaded",
                 "GET /model-info": "the live production version + the metric it was gated on",
                 "POST /predict": "score a batch of J1939 readings → per-row failure probability",
+                "POST /demo/generate": "kick off a bounded synthetic fleet (runs in a "
+                "separate worker; poll GET /demo/generate/{run_id}, then "
+                "/rows to browse it and /report for the per-vehicle risk roll-up)",
                 "GET /docs": "interactive OpenAPI docs",
             },
         }
@@ -499,6 +595,161 @@ def create_app(
             demo=_is_demo_version(version),
         )
 
+    # --- generate-your-own-data (F14a) ---------------------------------------
+    #
+    # The API's entire role here is to ENQUEUE. It writes a `queued` run, asks the worker
+    # — a separate deployable unit — to execute it, and answers 202. It does not import
+    # the forge, does not call generate.run_generation, and does not use BackgroundTasks
+    # (ADR-026 / decision S2: that would collapse the system back to one container and
+    # hollow out both remaining infra gates). A test asserts the API never generates.
+
+    def _require_generation() -> tuple[store_gen.GenerationStore, _jobs.JobTrigger]:
+        """Both halves of the split, or an honest 503 saying which one is missing."""
+        if gen_store is None or trigger is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "generate-your-own-data is not configured on this deployment: it needs "
+                    "a database (DATABASE_URL) to share state with the generation worker, "
+                    "and a worker to run it (GENERATION_JOB, or GENERATION_LOCAL_WORKER=1 "
+                    "for local development). The rest of the demo works without it."
+                ),
+            )
+        return gen_store, trigger
+
+    def _get_run(run_id: str) -> store_gen.GenerationRun:
+        gs, _ = _require_generation()
+        run = gs.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"no such generation run: {run_id}")
+        return run
+
+    def _run_response(run: store_gen.GenerationRun, *, worker: str | None = None) -> GenerationRunResponse:
+        return GenerationRunResponse(
+            run_id=run.run_id,
+            status=run.status,
+            n_units=run.n_units,
+            days=run.days,
+            seed=run.seed,
+            n_rows=run.n_rows,
+            expected_rows=run.spec.expected_rows,
+            error=run.error,
+            worker=worker,
+        )
+
+    @app.post("/demo/generate", response_model=GenerationRunResponse, status_code=202)
+    def demo_generate(request: GenerateRequest) -> GenerationRunResponse:
+        """Kick off a bounded fleet generation → **202** with a run id to poll.
+
+        Returns immediately: the forge runs in the worker, not here. An out-of-bounds
+        request (:class:`generate.CapExceeded`) is a **400** naming the cap it broke — the
+        free-tier envelope is enforced at the door, never by letting a container wedge.
+        """
+        gs, trig = _require_generation()
+        try:
+            spec = _generate.GenerationSpec(
+                n_units=request.n_units, days=request.days, seed=request.seed
+            ).validate()
+        except _generate.CapExceeded as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        run = gs.create_run(spec)
+        try:
+            trig.trigger(run.run_id, spec)
+        except _jobs.TriggerError as exc:
+            # The run row already exists, so the failure is visible where the user is
+            # looking (the poll), not only in a server log.
+            gs.mark_failed(run.run_id, error=str(exc))
+            raise HTTPException(
+                status_code=503, detail=f"could not start the generation worker: {exc}"
+            ) from exc
+        return _run_response(run, worker=trig.name)
+
+    @app.get("/demo/generate/{run_id}", response_model=GenerationRunResponse)
+    def demo_generate_status(run_id: str) -> GenerationRunResponse:
+        """Poll a run: ``queued`` → ``running`` → ``succeeded`` / ``failed`` (with a reason)."""
+        return _run_response(_get_run(run_id), worker=trigger.name if trigger else None)
+
+    @app.get("/demo/generate/{run_id}/rows", response_model=GeneratedRows)
+    def demo_generate_rows(run_id: str, offset: int = 0, limit: int = 50) -> GeneratedRows:
+        """Browse the stored fleet, a page at a time (in time order, per vehicle)."""
+        gs, _ = _require_generation()
+        run = _get_run(run_id)
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        return GeneratedRows(
+            run_id=run.run_id,
+            total_rows=gs.count_readings(run_id),
+            offset=offset,
+            limit=limit,
+            columns=_generate.stored_columns(),
+            rows=gs.readings(run_id, offset=offset, limit=limit),
+        )
+
+    @app.get("/demo/generate/{run_id}/report", response_model=FleetReport)
+    def demo_generate_report(run_id: str) -> FleetReport:
+        """The per-vehicle risk roll-up over the generated fleet.
+
+        Scored by whatever model is **promoted right now** — not by a score baked in at
+        generation time. That is what keeps the registry's central property true here too:
+        promote or roll back, and the report changes with no redeploy (ADR-008/ADR-009).
+        The roll-up is cached per ``(run, model version)``, so the scoring cost is paid once
+        per model and a promotion correctly invalidates it.
+        """
+        gs, _ = _require_generation()
+        run = _get_run(run_id)
+        if run.status != store_gen.STATUS_SUCCEEDED:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"run {run_id} is '{run.status}', not '{store_gen.STATUS_SUCCEEDED}' — "
+                    "there is nothing to report on yet."
+                    + (f" ({run.error})" if run.error else "")
+                ),
+            )
+        try:
+            version = store.load().version
+        except LookupError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        units = gs.load_report(run_id, version)
+        n_rows_scored = sum(u.n_rows for u in units)
+        if not units:
+            frame = gs.readings_frame(run_id)
+            if frame.empty:
+                raise HTTPException(
+                    status_code=409, detail=f"run {run_id} stored no readings."
+                )
+            version, proba = _score_frame(frame.loc[:, list(features.FEATURE_COLUMNS)])
+            units = _generate.roll_up(frame, np.asarray(proba))
+            gs.save_report(run_id, version, units)
+            n_rows_scored = len(frame)
+
+        return FleetReport(
+            run_id=run_id,
+            model_version=version,
+            demo=_is_demo_version(version),
+            n_units=len(units),
+            n_flagged=sum(1 for u in units if u.flagged),
+            n_rows_scored=n_rows_scored,
+            flag_threshold=_generate.FLAG_THRESHOLD,
+            rollup_rule=(
+                f"peak of a {_generate.ROLLUP_WINDOW_H:g}-hour rolling mean of the per-row "
+                "failure probability (sustained risk, not a single spike)"
+            ),
+            units=[
+                UnitRiskOut(
+                    unit_id=u.unit_id,
+                    n_rows=u.n_rows,
+                    risk=u.risk,
+                    peak=u.peak,
+                    high_risk_share=u.high_risk_share,
+                    flagged=u.flagged,
+                )
+                for u in units
+            ],
+        )
+
     @app.get("/demo", response_class=HTMLResponse)
     def demo() -> HTMLResponse:
         """A self-contained 'set parameters → get a prediction' page (F7).
@@ -509,7 +760,15 @@ def create_app(
         predictions read back from the managed DB (empty when none is configured).
         """
         recent = log.recent(limit=10) if log is not None else []
-        return HTMLResponse(_render_demo_page(recent, persistence=log is not None))
+        return HTMLResponse(
+            _render_demo_page(
+                recent,
+                persistence=log is not None,
+                # Generation needs BOTH halves of the split; if either is missing the panel
+                # says so rather than offering a button that can only 503.
+                generation=gen_store is not None and trigger is not None,
+            )
+        )
 
     return app
 
@@ -608,7 +867,10 @@ _DEMO_SEED: dict[str, float | None] = _PRESETS["healthy"]
 
 
 def _render_demo_page(
-    recent: list[store_pg.LoggedPrediction], *, persistence: bool
+    recent: list[store_pg.LoggedPrediction],
+    *,
+    persistence: bool,
+    generation: bool = False,
 ) -> str:
     """Render the self-contained demo HTML (inline CSS/JS, no external asset).
 
@@ -653,11 +915,26 @@ def _render_demo_page(
 
     # ``ensure_ascii=False`` keeps real UTF-8 (°, ≈, PT-BR accents) in the source — the
     # page is served as UTF-8 (<meta charset>), so this is cleaner than \uXXXX escapes.
+    # The caps are injected, never duplicated in the page: `generate` owns them, the form's
+    # min/max/step come from there, and the server re-validates anyway (a browser bound is
+    # a hint, not a guard).
+    gen_caps = {
+        "min_units": _generate.MIN_UNITS,
+        "max_units": _generate.MAX_UNITS,
+        "min_days": _generate.MIN_DAYS,
+        "max_days": _generate.MAX_DAYS,
+        "max_unit_days": _generate.MAX_UNIT_DAYS,
+        "default_units": _generate.DEFAULT_UNITS,
+        "default_days": _generate.DEFAULT_DAYS,
+        "default_seed": config.DEFAULT_SEED,
+    }
     return _DEMO_TEMPLATE.format(
         signal_meta_json=json.dumps(signal_meta, ensure_ascii=False),
         feature_order_json=json.dumps(list(features.FEATURE_COLUMNS), ensure_ascii=False),
         presets_json=json.dumps(_PRESETS, ensure_ascii=False),
         i18n_json=json.dumps(_DEMO_I18N, ensure_ascii=False),
+        gen_caps_json=json.dumps(gen_caps),
+        gen_enabled_json=json.dumps(bool(generation)),
         recent_html=recent_html,
         recent_note_key=recent_note_key,
     )
@@ -731,6 +1008,49 @@ _DEMO_I18N: dict[str, dict[str, object]] = {
         "axisProb": "failure probability →",
         "colRow": "row",
         "colProb": "failure prob.",
+        "genTitle": "Generate your own fleet",
+        "genBlurb": (
+            "Above you scored <em>your</em> data. Here you can <strong>make some</strong>: the "
+            "companion generator builds a synthetic fleet of heavy machinery, and every "
+            "vehicle in it gets a risk score. Generation runs in a <strong>separate worker "
+            "service</strong> — this page only kicks it off and polls for the result."
+        ),
+        "genOff": (
+            "Fleet generation is <strong>off</strong> on this deployment (it needs a database "
+            "and a worker) — it runs on the Cloud Run deploy."
+        ),
+        "genUnits": "Vehicles",
+        "genDays": "Window (days)",
+        "genSeed": "Seed",
+        "genGo": "Generate fleet",
+        "genCapHint": "Up to {cap} unit-days (vehicles × days) — a free-tier storage cap.",
+        "genQueued": "queued — waiting for the worker…",
+        "genRunning": "generating on the worker…",
+        "genFailed": "Generation failed: {msg}",
+        "genWorker": "worker: {name}",
+        "genReportTitle": "Fleet risk report",
+        "genFlagged": "vehicles flagged",
+        "genOf": "of",
+        "genRowsGen": "readings generated",
+        "genRule": (
+            "A vehicle is flagged when its risk reaches {t}%. Risk is the <strong>peak of a "
+            "1-hour rolling mean</strong> of its per-reading failure probability — a "
+            "<em>sustained</em> elevation, not a single spike. (Ranking on the single highest "
+            "reading instead would flag healthy vehicles: one injected sensor glitch is enough.)"
+        ),
+        "genDemo": (
+            "<strong>DEMO model.</strong> This fleet was scored by the fixture-trained demo "
+            "model (see <a href='/model-info'>/model-info</a>) — illustrative, not a reported "
+            "result."
+        ),
+        "genColUnit": "vehicle",
+        "genColRisk": "risk (sustained)",
+        "genColPeak": "peak reading",
+        "genColShare": "high-risk readings",
+        "genFlag": "flagged",
+        "genOk": "ok",
+        "genBrowseTitle": "The generated data",
+        "genShowing": "Showing the first {n} of {total} stored readings.",
         "recentTitle": "Recent predictions",
         "colWhen": "when",
         "colModel": "model",
@@ -830,6 +1150,49 @@ _DEMO_I18N: dict[str, dict[str, object]] = {
         "axisProb": "probabilidade de falha →",
         "colRow": "linha",
         "colProb": "prob. de falha",
+        "genTitle": "Gere a sua própria frota",
+        "genBlurb": (
+            "Acima você pontuou os <em>seus</em> dados. Aqui você pode <strong>criá-los</strong>: "
+            "o gerador companheiro monta uma frota sintética de máquinas pesadas, e cada veículo "
+            "dela recebe um score de risco. A geração roda num <strong>serviço worker "
+            "separado</strong> — esta página apenas dispara e consulta o resultado."
+        ),
+        "genOff": (
+            "A geração de frota está <strong>desligada</strong> neste deploy (precisa de um "
+            "banco e de um worker) — ela roda no deploy do Cloud Run."
+        ),
+        "genUnits": "Veículos",
+        "genDays": "Janela (dias)",
+        "genSeed": "Semente",
+        "genGo": "Gerar frota",
+        "genCapHint": "Até {cap} unidade-dias (veículos × dias) — um teto de armazenamento do free tier.",
+        "genQueued": "na fila — aguardando o worker…",
+        "genRunning": "gerando no worker…",
+        "genFailed": "A geração falhou: {msg}",
+        "genWorker": "worker: {name}",
+        "genReportTitle": "Relatório de risco da frota",
+        "genFlagged": "veículos sinalizados",
+        "genOf": "de",
+        "genRowsGen": "leituras geradas",
+        "genRule": (
+            "Um veículo é sinalizado quando seu risco atinge {t}%. O risco é o <strong>pico de "
+            "uma média móvel de 1 hora</strong> da probabilidade de falha por leitura — uma "
+            "elevação <em>sustentada</em>, não um pico isolado. (Ranquear pela maior leitura "
+            "isolada sinalizaria veículos saudáveis: basta uma falha de sensor injetada.)"
+        ),
+        "genDemo": (
+            "<strong>Modelo DEMO.</strong> Esta frota foi pontuada pelo modelo demo treinado no "
+            "fixture (veja <a href='/model-info'>/model-info</a>) — ilustrativo, não é um "
+            "resultado reportado."
+        ),
+        "genColUnit": "veículo",
+        "genColRisk": "risco (sustentado)",
+        "genColPeak": "pico de leitura",
+        "genColShare": "leituras de alto risco",
+        "genFlag": "sinalizado",
+        "genOk": "ok",
+        "genBrowseTitle": "Os dados gerados",
+        "genShowing": "Mostrando as primeiras {n} de {total} leituras armazenadas.",
         "recentTitle": "Previsões recentes",
         "colWhen": "quando",
         "colModel": "modelo",
@@ -977,6 +1340,18 @@ _DEMO_TEMPLATE = """<!doctype html>
   table.rows th {{ color:var(--muted); font-weight:600; }}
   .i18n-note {{ margin-top:30px; font-size:.76rem; color:var(--muted); }}
   .err {{ color:var(--err); }}
+  table.fleet {{ width:100%; border-collapse:collapse; font-size:.86rem; margin-top:10px; }}
+  table.fleet th, table.fleet td {{ text-align:left; padding:6px 9px;
+    border-bottom:1px solid var(--line); }}
+  table.fleet th {{ color:var(--muted); font-weight:600; }}
+  table.fleet tr.flag td {{ background:var(--demo-bg); }}
+  .pill {{ display:inline-block; padding:1px 8px; border-radius:999px; font-size:.72rem;
+    font-weight:600; border:1px solid var(--line); color:var(--muted); }}
+  .pill.on {{ background:var(--demo-bg); color:var(--demo); border-color:var(--demo-line); }}
+  .bar-cell {{ display:flex; align-items:center; gap:7px; }}
+  .bar-cell .track {{ flex:1; max-width:110px; height:7px; border-radius:4px;
+    background:var(--meter-bg); overflow:hidden; }}
+  .bar-cell .track > i {{ display:block; height:100%; background:var(--accent); }}
 </style></head>
 <body><main>
   <div class="top">
@@ -1020,6 +1395,21 @@ _DEMO_TEMPLATE = """<!doctype html>
   </section>
 
   <section>
+    <h2 data-i18n="genTitle"></h2>
+    <p class="muted" data-i18n-html="genBlurb"></p>
+    <p class="muted" id="genOff" data-i18n-html="genOff" hidden></p>
+    <form id="genForm">
+      <div class="grid" id="genFields"></div>
+      <p class="conf" id="genCapHint"></p>
+      <div class="actions">
+        <button type="submit" class="go" data-i18n="genGo"></button>
+        <span class="muted" id="genStatus"></span>
+      </div>
+    </form>
+    <div id="genResult"></div>
+  </section>
+
+  <section>
     <h2 data-i18n="recentTitle"></h2>
     <p class="muted" data-i18n-html="{recent_note_key}"></p>
     {recent_html}
@@ -1032,6 +1422,8 @@ _DEMO_TEMPLATE = """<!doctype html>
   const FEATURE_ORDER = {feature_order_json};
   const PRESETS = {presets_json};
   const I18N = {i18n_json};
+  const GEN_CAPS = {gen_caps_json};
+  const GEN_ENABLED = {gen_enabled_json};
 
   // --- theme: prefers-color-scheme default + persisted manual override -----------
   const THEME_KEY = 'forge-pdm.theme';
@@ -1068,6 +1460,7 @@ _DEMO_TEMPLATE = """<!doctype html>
     for (const el of document.querySelectorAll('[data-i18n-html]'))
       el.innerHTML = t(el.getAttribute('data-i18n-html'));
     buildFields();          // labels/tooltips are localized → rebuild (values preserved)
+    buildGenFields();       // …and so are the fleet-generation ones
     applyTheme();           // the theme button label is localized too
   }}
 
@@ -1265,6 +1658,122 @@ _DEMO_TEMPLATE = """<!doctype html>
         '</span><span>100%</span></div>' +
       '<table class="rows"><thead><tr><th>' + esc(t('colRow')) + '</th><th>' +
       esc(t('colProb')) + '</th></tr></thead><tbody>' + rows + '</tbody></table>' + more;
+  }}
+
+  // --- F14a: generate your own fleet --------------------------------------------
+  // The API only ENQUEUES: POST returns 202 with a run id, the forge runs in a separate
+  // worker service, and this polls until the run is terminal (ADR-026 / S2).
+  const genForm = document.getElementById('genForm');
+  const genStatus = document.getElementById('genStatus');
+  const genResult = document.getElementById('genResult');
+  const GEN_FIELDS = [
+    {{ id:'genUnits', key:'genUnits', min:GEN_CAPS.min_units, max:GEN_CAPS.max_units,
+       step:1, value:GEN_CAPS.default_units }},
+    {{ id:'genDays', key:'genDays', min:GEN_CAPS.min_days, max:GEN_CAPS.max_days,
+       step:1, value:GEN_CAPS.default_days }},
+    {{ id:'genSeed', key:'genSeed', min:0, max:9999, step:1, value:GEN_CAPS.default_seed }},
+  ];
+  function buildGenFields() {{
+    const host = document.getElementById('genFields');
+    if (!host) return;
+    const keep = {{}};
+    for (const el of host.querySelectorAll('input')) keep[el.id] = el.value;
+    host.innerHTML = GEN_FIELDS.map(f =>
+      '<label class="field"><span class="lab">' + esc(t(f.key)) + '</span>' +
+      '<input type="number" id="' + f.id + '" min="' + f.min + '" max="' + f.max +
+      '" step="' + f.step + '" value="' + (keep[f.id] != null ? keep[f.id] : f.value) + '">' +
+      '</label>').join('');
+    document.getElementById('genCapHint').textContent =
+      t('genCapHint').replace('{{cap}}', GEN_CAPS.max_unit_days);
+    document.getElementById('genOff').hidden = GEN_ENABLED;
+    genForm.querySelector('button').disabled = !GEN_ENABLED;
+  }}
+
+  genForm.addEventListener('submit', async (e) => {{
+    e.preventDefault();
+    const btn = genForm.querySelector('button');
+    btn.disabled = true; genResult.innerHTML = ''; genStatus.textContent = '…';
+    const body = {{
+      n_units: Number(document.getElementById('genUnits').value),
+      days: Number(document.getElementById('genDays').value),
+      seed: Number(document.getElementById('genSeed').value),
+    }};
+    try {{
+      const resp = await fetch('/demo/generate', {{
+        method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(body) }});
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || resp.status);
+      genStatus.textContent = t('genQueued') + ' · ' + t('genWorker').replace('{{name}}', data.worker);
+      await pollRun(data.run_id);
+    }} catch (err) {{
+      genStatus.textContent = '';
+      genResult.innerHTML = '<p class="err">' +
+        t('genFailed').replace('{{msg}}', esc(err.message)) + '</p>';
+    }} finally {{ btn.disabled = !GEN_ENABLED ? true : false; }}
+  }});
+
+  async function pollRun(runId) {{
+    // The worker is a cold-starting container; poll patiently rather than hammering it.
+    for (let i = 0; i < 120; i++) {{
+      await new Promise(r => setTimeout(r, 1500));
+      const resp = await fetch('/demo/generate/' + encodeURIComponent(runId));
+      const run = await resp.json();
+      if (!resp.ok) throw new Error(run.detail || resp.status);
+      if (run.status === 'running') genStatus.textContent = t('genRunning');
+      if (run.status === 'failed') throw new Error(run.error || 'failed');
+      if (run.status === 'succeeded') {{
+        genStatus.textContent = '';
+        return renderFleet(runId, run);
+      }}
+    }}
+    throw new Error('timed out');
+  }}
+
+  async function renderFleet(runId, run) {{
+    const [report, page] = await Promise.all([
+      fetch('/demo/generate/' + encodeURIComponent(runId) + '/report').then(r => r.json()),
+      fetch('/demo/generate/' + encodeURIComponent(runId) + '/rows?limit=20').then(r => r.json()),
+    ]);
+    const pct = (x) => (x * 100).toFixed(1) + '%';
+    const fleetRows = report.units.map(u =>
+      '<tr class="' + (u.flagged ? 'flag' : '') + '"><td><code>' + esc(u.unit_id) + '</code></td>' +
+      '<td><div class="bar-cell"><div class="track"><i style="width:' +
+        (u.risk * 100).toFixed(0) + '%"></i></div><span>' + pct(u.risk) + '</span></div></td>' +
+      '<td class="muted">' + pct(u.peak) + '</td>' +
+      '<td class="muted">' + pct(u.high_risk_share) + '</td>' +
+      '<td><span class="pill ' + (u.flagged ? 'on' : '') + '">' +
+        esc(u.flagged ? t('genFlag') : t('genOk')) + '</span></td></tr>').join('');
+
+    const cols = page.columns;
+    const head = cols.map(c => '<th>' + esc(c) + '</th>').join('');
+    const dataRows = page.rows.map(r => '<tr>' + cols.map(c => {{
+      const v = r[c];
+      if (v === null || v === undefined) return '<td class="muted">null</td>';   // era-NULL
+      return '<td>' + esc(typeof v === 'number' ? v.toFixed(1) : v) + '</td>';
+    }}).join('') + '</tr>').join('');
+
+    genResult.innerHTML =
+      (report.demo ? '<div class="banner">' + t('genDemo') + '</div>' : '') +
+      '<h2>' + esc(t('genReportTitle')) + '</h2>' +
+      '<div class="summary">' +
+        '<div class="stat"><b>' + report.n_flagged + ' / ' + report.n_units +
+          '</b><span>' + esc(t('genFlagged')) + '</span></div>' +
+        '<div class="stat"><b>' + run.n_rows.toLocaleString() + '</b><span>' +
+          esc(t('genRowsGen')) + '</span></div>' +
+        '<div class="stat"><b>v' + esc(report.model_version) + '</b><span>' +
+          esc(t('colModel')) + '</span></div>' +
+      '</div>' +
+      '<p class="conf">' + t('genRule').replace('{{t}}',
+        (report.flag_threshold * 100).toFixed(0)) + '</p>' +
+      '<table class="fleet"><thead><tr><th>' + esc(t('genColUnit')) + '</th><th>' +
+        esc(t('genColRisk')) + '</th><th>' + esc(t('genColPeak')) + '</th><th>' +
+        esc(t('genColShare')) + '</th><th></th></tr></thead><tbody>' + fleetRows +
+      '</tbody></table>' +
+      '<h2>' + esc(t('genBrowseTitle')) + '</h2>' +
+      '<p class="muted">' + esc(t('genShowing').replace('{{n}}', page.rows.length)
+        .replace('{{total}}', page.total_rows.toLocaleString())) + '</p>' +
+      '<div style="overflow-x:auto"><table class="rows"><thead><tr>' + head +
+      '</tr></thead><tbody>' + dataRows + '</tbody></table></div>';
   }}
   </script>
 </main></body></html>"""

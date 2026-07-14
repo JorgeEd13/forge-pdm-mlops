@@ -453,3 +453,33 @@ share a design language — do them close together.
   ≈0.82 framing hold in both languages (asserted by test). 5 new offline tests in `test_demo.py`;
   the existing demo tests stay green. Paired design language with `receivables-agent` Phase 9
   (ADR-015). Together F8 + F9 complete the "friendly, versatile, bring-your-own-data demo" vision.
+
+---
+
+# Epoch 2 (F10–F17) — from one risk score to a per-vehicle, multi-fault report
+
+**The plan for this epoch lives in [`EPOCH2_PLAN.md`](EPOCH2_PLAN.md)** — that file is the owner of
+the phase definitions, the locked decisions, and the execution order. It is **not** restated here.
+Execution order (resequenced 2026-07-14, decision S1): **F14a → F17 → F16 → F10 → F11 → F12 → F13 →
+F14b → F15**. This section only tracks *status*.
+
+## F14a — Generate-your-own-data: the topology ✅ **DONE (2026-07-14, ADR-026)**
+
+- **Objective.** Co-deploy the forge so a user generates a bounded synthetic fleet, browses it, and
+  gets a per-vehicle risk roll-up — and, the reason it goes first, **create the multi-service
+  topology** that F17 (Terraform) and F16 (Kubernetes) are blocked on.
+- **Status.** Shipped. Generation runs in a **separate deployable unit** — a Cloud Run **Job**
+  (`Dockerfile.worker`, `pdm generate-run`), started by the API over the Cloud Run Admin API; the
+  kick-off POST returns **202 in ~16 ms** and a test fails if the API ever generates in-process
+  (decision S2). Caps are a **storage** budget against Neon's free 0.5 GB (30 vehicles × 14 days,
+  binding cap 200 unit-days, 200k retained rows, oldest evicted). The per-vehicle roll-up is the
+  **peak of a 1-hour rolling mean** — chosen by measurement over the two candidates the plan
+  offered, *both of which lost* (see ADR-026; `max` is a one-row statistic and the forge injects
+  outliers on purpose). The report is scored by whatever model is **promoted at read time**, cached
+  per model version, so a promotion or rollback still changes what it says with no redeploy.
+- **DoD — met.** Kick off → poll → browse → per-vehicle roll-up, inside the free Cloud Run + Neon
+  envelope; the worker is genuinely separate (asserted); the `demo=fixture` banner holds on the
+  roll-up; caps fail loud as 4xx. 35 new tests.
+- **Deliberately NOT in this phase.** The multi-label narrative report — that is **F14b**, after the
+  committee (F11) and the attribution features (F12). The roll-up here is the *existing single-label*
+  risk score, per vehicle, and is labelled as such.

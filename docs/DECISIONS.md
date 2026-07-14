@@ -1170,3 +1170,138 @@ assumptions updated: the ttf-horizon test now tolerates one time-stride of downs
 deterministically (the richer fixture is class-rich at every seed). The honest boundary is intact:
 the baked model is still fixture-trained and labeled `demo=fixture`; the ≈0.82 figure is still the
 full-data model's alone.
+
+---
+
+## ADR-026 — Generate-your-own-data (F14a): the generation worker is a **separate deployable unit**, the caps are a **storage** budget, and the per-vehicle roll-up is a **sustained-risk** statistic — because `max` and `high-risk-share` were both measured and both lost
+
+**Status:** accepted (2026-07-14). **Phase:** F14a — the first phase of Epoch 2 and the one that
+creates the multi-service topology F17 (Terraform) and F16 (Kubernetes) are blocked on. Records the
+locked decisions **S1** (F14 splits; its topology half leads) and **S2** (async-as-a-separate-unit)
+from `docs/EPOCH2_PLAN.md` §1, plus the two questions §5 left open at phase entry.
+
+**Context.** F8 let a tester score *their* data; this phase lets them **make some**: generate a
+bounded synthetic fleet, browse it, and get one risk number per vehicle. That is a real product
+increment — but the reason it runs *first*, ahead of four phases of modelling work, is topological.
+F16 and F17 are the two remaining gates, and neither is blocked on a better report; both are blocked
+on the system being **genuinely more than one deployable unit** (S1).
+
+### Decision 1 — generation runs in its own deployable unit (S2), not a `BackgroundTask`
+
+A Cloud Run **Job** (`Dockerfile.worker`, `pdm generate-run`), started by the API through the Cloud
+Run Admin API (`jobs.CloudRunJobTrigger`, stdlib `urllib` + the metadata-server token — no new
+dependency for one HTTP POST). The API's entire role is to **enqueue**: write a `queued` run, ask the
+worker to execute it, answer **202**. Measured: the kick-off POST returns in **16 ms**.
+
+*Why not `BackgroundTasks`* — it is three lines and it "works", which is exactly the trap. It leaves
+the system as **one container**, and then Kubernetes over one container is resume-driven development
+a reviewer can smell, and Terraform has one resource to codify. It is also wrong on its own terms: a
+Cloud Run instance that scales to zero can be killed mid-task, so the background work simply
+vanishes, and a runaway generation competes for the free container's single CPU with the requests it
+is supposed to be serving. **`tests/test_generate_api.py::test_the_api_never_generates_in_process`
+fails if anybody reaches for it** — a claim of this shape has to be asserted in code, because the way
+it breaks is silent.
+
+The two images have two dependency surfaces, which is the split made visible: serving is
+`[serve,cloud]` (FastAPI + the baked demo registry, long-lived, must be warm); the worker is
+`[cloud,generate]` (the forge + the store, runs once to completion, then dies — no web server, no
+model).
+
+**The worker deliberately does not score.** It stores raw readings; the API scores them **at read
+time, with whatever model is promoted right now**, caching the roll-up per `(run, model version)`.
+Baking a score into the store at generation time would have been easier and would have quietly
+broken the property the whole registry exists for — promote or roll back, and what is served changes
+with no redeploy (ADR-008/ADR-009). The cache key *is* the invalidation.
+
+### Decision 2 — the caps are a **storage** budget, not a timeout budget
+
+`MIN/MAX_UNITS` 3–30, `MIN/MAX_DAYS` 1–14, and the binding cap **`MAX_UNIT_DAYS = 200`** (fleet ×
+window, so a user may trade one for the other), with a global retention budget of
+**`MAX_TOTAL_STORED_ROWS = 200_000`**, oldest finished runs evicted first.
+
+The arithmetic, measured rather than assumed: at the fixed 5-minute stride a unit-day is 288
+readings, so a full-size run is 57,600 rows; at a **measured ~432 B/row** (SQLite, index included)
+that is ~25 MB per run and ~86 MB for the whole retained store — under a fifth of Neon's free 0.5 GB,
+leaving room for the F7 prediction log and Postgres's own overhead. **A first estimate of ~300 B/row
+was wrong and was corrected against the measurement**, not the other way round.
+
+What the caps are *not* is a time budget: a full-size run generates in ~1 s and scores in ~0.2 s,
+nowhere near any timeout. Generation is out-of-process because that is the right **shape** (S2), not
+because it is slow. The thing that would actually kill this demo is a public endpoint quietly filling
+a free-tier database — and taking the prediction log down with it. Hence retention, and hence caps
+that fail **loud** at the door (`CapExceeded` → 400 naming the bound), never a wedged container.
+
+### Decision 3 — the per-vehicle roll-up is the **peak of a 1-hour rolling mean**
+
+§5 offered two candidates — **max-over-rows** and **high-risk-share**. Both were measured against
+per-unit ground truth (the labels read *only* to grade, never as an input — the ADR-003 /
+`detect_score` discipline), on 30-vehicle × 7-day fleets across 6–8 seeds. **Both lost**, and the
+rule that won was not on the list:
+
+| roll-up rule | unit ROC-AUC (demo model) | unit ROC-AUC (**full-data** model) |
+|---|---|---|
+| `max` over the unit's rows | 0.908 ±0.118 | 0.951 ±0.060 |
+| share of rows ≥ 0.5 | 0.835 ±0.062 | 0.864 ±0.108 |
+| share of rows ≥ 0.8 | 0.957 ±0.041 | 0.960 ±0.025 |
+| 95th percentile | 0.943 ±0.089 | 0.954 ±0.052 |
+| **peak of a 1-h rolling mean** | **0.970 ±0.022** | **0.983 ±0.024** |
+| peak of a 6-h rolling mean | 0.967 ±0.052 | 0.982 ±0.025 |
+
+**Why `max` loses is the interesting part, and it is structural, not incidental.** `max` is a
+**one-row statistic**, and the generator *deliberately injects outliers and sensor faults* — so a
+single spurious spike flags a healthy vehicle. It shows up in the numbers as the widest variance in
+the table and a near-zero median separation between healthy and failing units (0.025): healthy
+vehicles peak near 1.0 too. The live demo reproduces it — a healthy vehicle peaking at **0.85** on a
+single reading while its sustained risk is 0.51. **The share rules fail the opposite way**: a failure
+ramp occupies a small slice of a 7-day window, so averaging over the window dilutes it.
+
+What separates a degrading vehicle from a healthy one is a **sustained** run of high scores — which
+is what a real degradation ramp produces (forge ADR-020) and what an injected outlier cannot. So:
+rolling mean over an hour, then its peak. It wins on both models, with the **lowest** variance, and
+1 h ≈ 6 h (1 h chosen: tighter variance, cheaper, and "elevated for an hour" is a sentence a report
+can say). The finding is reported on the **full-data** model precisely so it is not a fixture-model
+artifact (ADR-001) — and that model reproduced its recorded 0.8125 held-out AUC exactly, which is the
+sanity check that the probe was wired to the real thing.
+
+**Flag threshold = 0.70**, from the measured recall/precision knee, keeping the plan's recall bias (a
+missed failure costs more than an unnecessary inspection): 100% recall / 44% precision / 33% of the
+fleet flagged on the full-data model; 97% / 61% / 23% on the demo model. The report **shows** `peak`
+and `high_risk_share` next to the risk score — the raw numbers the rule deliberately does *not* rank
+on — so it can show its work rather than ask to be trusted.
+
+### Decision 4 — a short window honestly produces a boring report, and that sets the default
+
+Failures are hazard-sampled per step, so a 30-vehicle × 2-day fleet frequently contains **zero**
+events (measured: 3/30 vehicles have an event at 7 days, 8/30 at 30 days). Two consequences, both
+kept honest: the default is **20 vehicles × 7 days** (the smallest window that reliably shows
+something), and the roll-up answers *"which vehicles built toward a failure **during this window**"* —
+not *"which will fail next week"*. The forge only samples events **inside** the window, so
+"will it fail after the window ends" has **no ground truth at all** and is therefore not a claim this
+demo is allowed to make. An earlier framing of the probe assumed otherwise and measured a 0%
+positive rate — the data said no, and the product wording followed the data.
+
+### Consequences
+
+New modules: `generate.py` (spec + caps + the roll-up — pure, no forge import), `store_gen.py` (runs
++ readings + the version-keyed roll-up cache + retention), `jobs.py` (the trigger, i.e. the boundary
+itself), `worker.py` (the job's entry point). `serve.py` gains `POST /demo/generate` → 202 and
+`GET /demo/generate/{id}` · `/rows` · `/report`, plus a bilingual, themed generate panel on `/demo`
+(still no CDN). `pdm generate-run` is the worker command. `Dockerfile.worker` is the second image;
+`deploy_cloudrun_neon.sh` builds it, creates the **Cloud Run Job**, and grants the API `run.invoker`
+**on that job alone**.
+
+Honesty boundaries hold: the roll-up carries the `demo=fixture` banner when the scoring model is the
+demo one (tag-driven — an untagged local model reports `demo:false`), and generation degrades to an
+explicit 503 that *says* it needs a database and a worker, so a local `pdm serve`, the HF Space and
+CI are untouched. Nothing about the deployed topology can silently fall back to generating on the
+serving container: the local-subprocess trigger must be asked for by name (`GENERATION_LOCAL_WORKER=1`)
+and is documented as a development stand-in, not a second deployable unit.
+
+**What this phase must not become** (S1's ⚠): "a second container that does nothing". It ships a real
+capability *and* a real topology — and F16/F17 now have two genuine resources to describe. The known,
+knowingly-paid cost of S1 is that the report renderer gets paid for twice: **F14b** replaces this
+single-label roll-up with the multi-label narrative, on the same topology, moving no service
+boundary. **Tests: 35 new** (`test_generate.py` 24 — caps, the roll-up rule incl. the spike-vs-ramp
+case, the store, retention, the worker, and two real-forge tests gated on `[generate]`;
+`test_generate_api.py` 11 — the S2 invariant, 202/400/404/409/503 contracts, poll → browse → report,
+and the promotion-invalidates-the-cache property).

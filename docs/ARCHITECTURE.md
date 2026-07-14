@@ -62,7 +62,37 @@ configs/dataset.json + pinned can-telemetry-forge
 | `serve.py` | FastAPI serving the `production`-**aliased** model (`/predict` → failure probabilities, `/health`, `/model-info`); lazy cached load via the native flavor; follows a promotion/rollback with no redeploy. |
 | `monitor.py` | Evidently drift report (baseline vs. season shift) + a drift decision. |
 | `flows.py` | Prefect flow: detect_drift → [branch] → retrain → evaluate → promote. |
+| `upload.py` | F8 bring-your-own-data: parse + **fuzzy column mapping** → a scorable frame (unmapped signal → era-NULL). |
+| `store_pg.py` | F7 prediction log on the managed Postgres; **graceful degrade to `None`** when no `DATABASE_URL`. |
+| `generate.py` | F14a: the generation **spec + caps** (the free-tier envelope) and the **per-vehicle roll-up** rule. Pure — the forge import is lazy, so the API never pays for it. |
+| `store_gen.py` | F14a: the runs / generated-readings / roll-up-cache tables — **the only channel between the API and the worker**; plus retention against the free 0.5 GB. |
+| `jobs.py` | F14a: **the web/worker boundary itself.** Starts a Cloud Run **Job** execution (stdlib `urllib` + the metadata token). The reason `BackgroundTasks` is not here is ADR-026 / S2. |
+| `worker.py` | F14a: the **second deployable unit's** entry point (`pdm generate-run`, `Dockerfile.worker`) — the *only* process that runs the forge. |
 | `cli.py` | `pdm` entry point dispatching to the above. |
+
+### The two deployable units (F14a)
+
+The system is no longer one container, and that is load-bearing — it is what F17 (Terraform) and F16
+(Kubernetes) describe.
+
+```
+  browser ──POST /demo/generate──► serve.py (Cloud Run SERVICE)
+                                      │  writes a `queued` run           ┌───────────────────┐
+                                      ├─────────────────────────────────►│  Neon Postgres    │
+                                      │  jobs.py: start a job execution  │  (shared state —  │
+                                      ▼                                  │   the ONLY channel│
+                            worker.py (Cloud Run JOB) ──generates──────► │   between them)   │
+                            Dockerfile.worker, [cloud,generate]          └───────────────────┘
+                            runs once → stores rows → exits                        │
+                                                                                   │
+  browser ──GET  …/report──────► serve.py: score the stored rows with the ◄────────┘
+                                 model promoted RIGHT NOW (cached per version,
+                                 so a promotion/rollback re-scores — ADR-008/009)
+```
+
+The API **never** runs the forge (asserted by test); the worker **never** scores. Both properties are
+deliberate: the first is what makes the topology real, the second is what keeps the registry's
+"promote and the answer changes, with no redeploy" property true on the report too.
 
 ## Cross-cutting invariants
 

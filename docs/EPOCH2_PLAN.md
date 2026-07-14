@@ -1,8 +1,9 @@
 # Epoch 2 — from one risk score to a per-vehicle, multi-fault maintenance report
 
-**Status:** planned (not started); **resequenced 2026-07-14** — see **S1** (F14 splits; its topology
-half leads) and **S2** (the generation worker is a separate deployable unit). Execution order is
-**F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**; phase IDs are stable, only the order
+**Status:** in progress — **F14a is DONE** (2026-07-14, ADR-026); **F17 is next**. Resequenced
+2026-07-14 — see **S1** (F14 splits; its topology half leads) and **S2** (the generation worker is a
+separate deployable unit; it **shipped that way**). Execution order is
+**~~F14a~~ → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**; phase IDs are stable, only the order
 moved. **Owner doc:** this file is the single source of truth for the Epoch-2 body of work (phases
 **F10–F17**). `docs/STATE.md` points here; per-phase ADRs get written into the relevant repo's
 `DECISIONS.md` at implementation time (forge-pdm from **ADR-020**, can-telemetry-forge from
@@ -336,7 +337,7 @@ S1's rationale, along with why it was reversed. Do not silently restore it.)*
 - **⚠ DO NOT MISREAD.** Implement **one** exemplar, not the whole bucket-3 catalogue. Enrichment
   features are duty/context (leading), never symptoms of the failure.
 
-### F14a — Generate-your-own-data: the topology *(NEXT — first phase of Epoch 2, per S1)*
+### F14a — Generate-your-own-data: the topology — **DONE (2026-07-14, ADR-026)**
 - **Objective.** Co-deploy the forge so a user generates a bounded synthetic dataset, stores it,
   browses it, and gets a **per-vehicle risk roll-up** — scored by **today's** single-label demo
   model. This is the phase that **creates the multi-service topology** F16/F17 depend on.
@@ -447,11 +448,15 @@ S1's rationale, along with why it was reversed. Do not silently restore it.)*
 
 ## §5 — Open questions to resolve at phase entry (not yet decided)
 
-- **F14a:** the exact fleet/window/row caps that fit Neon 0.5 GB + the Cloud Run request timeout;
-  the per-vehicle roll-up rule for the interim single-label report (max-over-rows vs.
-  high-risk-share). *(The async-mechanism question — worker vs. background task — is **CLOSED**:
-  see **S2**. It is a separate deployable unit. Do not reopen it in F14a; both remaining gates
-  depend on it.)*
+- ~~**F14a:** the caps; the per-vehicle roll-up rule.~~ **RESOLVED at implementation, 2026-07-14 —
+  owner: forge-pdm ADR-026** (do not restate the numbers here; read it there). In brief, and only
+  as a pointer: the caps turned out to be a **storage** budget, not a timeout budget (generation is
+  ~1 s — it is out-of-process because of **S2**, not because it is slow); and the roll-up is
+  **neither** of the two candidates this line offered — both `max-over-rows` and `high-risk-share`
+  were measured and both lost to the **peak of a 1-hour rolling mean**, on the demo *and* the
+  full-data model. `max` loses *structurally*: it is a one-row statistic and the forge deliberately
+  injects outliers, so a single spurious spike flags a healthy vehicle. *(The async-mechanism
+  question was already **CLOSED** by **S2** — a separate deployable unit. It shipped that way.)*
 - **F17:** the **state backend** — local state (gitignored) vs. a GCS free-tier bucket. The state
   file is secrets-adjacent (Neon connection string) and never goes in git.
 - **F16:** Helm vs. plain manifests; whether the generation worker maps to a K8s `Job` or a
