@@ -77,6 +77,16 @@ DoD: proof the config describes reality rather than merely looking plausible.
   dependency surfaces" claim: the split is real at the **extras** level, but both images sit on a base
   carrying the training stack. **Real fix = a lighter worker image** (move the training stack to its
   own extra) — touches every image, so it is its own piece of work.
+- **Deploy targets, all three settled (Fluxo L item 11):** F17 touched **zero application code** (no
+  `src/`, no `tests/`, no `pyproject.toml`, no Dockerfile) — so **nothing was owed to any target**.
+  **Cloud Run** is already at the F17 state (`terraform apply` *is* the deploy). **GitHub** = pushed.
+  **HF Space** = already live and in sync on app code (`git diff main space-deploy -- src/ tests/
+  pyproject.toml` → **empty**).
+  > ⚠ **Expected, benign divergence — do NOT "fix" it:** `git diff main space-deploy -- scripts/` shows
+  > `deploy_cloudrun.sh` + `deploy_cloudrun_neon.sh`. Those are **GCP-only** scripts the Space never
+  > runs, and F17 rewrote them on `main`. The Fluxo-L item-11 check includes `scripts/` in its diff, so
+  > **it will flag this next session as a false positive.** It is not divergence that matters: the app
+  > code is identical. Syncing GCP deploy scripts onto the Space branch would add noise, not safety.
 - **Next: F16 (Kubernetes on `kind`).** ⚠ Its justification is **the MARKET, not the project** — do
   **not** defend it the way F17 was defended. F17 fixed a defect this repo genuinely had; F16 will
   not, and must say so out loud (`EPOCH2_PLAN.md` §3, F16's ⚠ block).
