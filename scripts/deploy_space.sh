@@ -45,12 +45,22 @@ BRANCH="space-deploy"
 REMOTE="space"
 LFS_URL="https://huggingface.co/spaces/JorgeEd/forge-pdm-mlops.git/info/lfs"
 
-# Paths synced from `main`. Everything the app and its docs need — and NOTHING that is
-# Space-specific (Dockerfile / README.md / .gitattributes are owned by this branch; see above).
+# Text/code paths synced from `main`. Everything the app and its docs need — and NOTHING that
+# is Space-specific (Dockerfile / README.md / .gitattributes are owned by this branch, above).
 SYNC_PATHS=(
-  src tests docs scripts configs data assets .github
+  src tests docs scripts configs .github
   CLAUDE.md PLAN.md pyproject.toml docker-compose.yml
   Dockerfile.hf Dockerfile.worker .gcloudignore .gitignore
+)
+
+# Binary paths that this branch tracks with **LFS** while `main` keeps them as plain files.
+# They CANNOT be synced with `git checkout main -- <path>`: that stages main's blob verbatim,
+# **bypassing the LFS clean filter**, and the HF pre-receive hook then rejects the whole push
+# ("Your push was rejected because it contains binary files"). They must be written into the
+# worktree and `git add`-ed, so the filter runs and the committed blob is a POINTER.
+LFS_PATHS=(
+  data/sample_readings.parquet
+  assets/logo.png
 )
 
 start_branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -74,6 +84,29 @@ git checkout "${BRANCH}"
 
 echo "[deploy] syncing app + docs from ${start_branch} → ${BRANCH}…"
 git checkout "${start_branch}" -- "${SYNC_PATHS[@]}"
+
+# The LFS-tracked binaries: write the bytes, then `git add` so the clean filter turns them
+# into pointers (see LFS_PATHS above for why `git checkout main --` is wrong here).
+for path in "${LFS_PATHS[@]}"; do
+  if git cat-file -e "${start_branch}:${path}" 2>/dev/null; then
+    mkdir -p "$(dirname "${path}")"
+    git show "${start_branch}:${path}" > "${path}"
+    git add "${path}"
+  fi
+done
+
+# Guard: every staged blob under an LFS path must be a POINTER, never the raw bytes. If this
+# trips, the push would be rejected by HF anyway — fail here, where the message is legible.
+for path in "${LFS_PATHS[@]}"; do
+  if git diff --cached --name-only | grep -qxF "${path}"; then
+    if ! git cat-file -p ":${path}" | head -1 | grep -q '^version https://git-lfs'; then
+      echo "error: ${path} is staged as RAW BINARY, not an LFS pointer." >&2
+      echo "       HF rejects binary files; is git-lfs installed (\`git lfs install\`)?" >&2
+      git reset --hard >/dev/null
+      exit 1
+    fi
+  fi
+done
 
 if git diff --cached --quiet; then
   echo "[deploy] nothing to forward — the Space is already at ${start_branch}."
