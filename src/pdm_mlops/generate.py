@@ -152,7 +152,9 @@ def build_forge_config(spec: GenerationSpec):
     """
     from can_telemetry_forge.config import config_from_dict, load_config
 
-    canonical = load_config(str(config.DATASET_CONFIG))
+    # NOT `config.DATASET_CONFIG` directly: the worker runs the package **installed**, where
+    # that path points into site-packages (see `config.dataset_config_path`).
+    canonical = load_config(str(config.dataset_config_path()))
     regions = canonical.fleet.regions
     n_contracts = min(len(regions), spec.n_units)
 

@@ -25,8 +25,10 @@
 FROM python:3.12-slim
 
 # LightGBM (a core dependency, imported through pdm_mlops.features) needs libgomp.
+# git is needed to install the generator — see below; it is why this image, and not the
+# serving one, carries it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get install -y --no-install-recommends libgomp1 git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 appuser
@@ -35,13 +37,34 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-# [generate] pins can-telemetry-forge — the SAME pin the training path uses (ADR-001), so a
-# fleet a user generates here is the same recipe the model was trained on, not a lookalike.
+
+# **can-telemetry-forge is NOT on PyPI** — it is the companion showcase repo, and locally it
+# lives as an *editable* install from a sibling checkout. That is precisely what hid this:
+# every local run, every test and the whole `[generate]` extra worked, and the first cloud
+# build of this image failed on `No matching distribution found for can-telemetry-forge`.
+# It is the same class of container-only defect the F6 deploy hit (ADR-014) — a native run
+# cannot see it, because the dependency is already there.
+#
+# So: install the generator from its public git remote, pinned to an **immutable commit**.
+# That is *stronger* than the `==0.2.0` version pin ADR-001 asks for, not weaker — a version
+# can be re-cut, a SHA cannot. pip then sees can-telemetry-forge 0.2.0 already satisfied and
+# never reaches for an index when the package's own `[generate]` extra is resolved below.
+ARG FORGE_REF=eebb5c3922d3ec6b6b0a2da7f16b50bc044f0fd0
+RUN pip install --no-cache-dir \
+      "can-telemetry-forge @ git+https://github.com/JorgeEd13/can-telemetry-forge.git@${FORGE_REF}"
+
 RUN pip install --no-cache-dir ".[cloud,generate]"
 
 # The canonical dataset recipe. The demo generates a bounded SLICE of it (a smaller fleet,
 # a shorter window) — same seed discipline, same signals, same label horizon.
 COPY configs ./configs
+
+# An INSTALLED package resolves paths off site-packages, not the repo: `config.REPO_ROOT` is
+# `/usr/local/lib/python3.12` in here, so the copied `configs/` above is invisible to it.
+# This is the SAME defect the F6 deploy hit with the smoke fixture (ADR-014) — and it bit
+# again here, on the worker's first real cloud run, because it is invisible to every native
+# run. Point the package at the file's real location (config.dataset_config_path).
+ENV DATASET_CONFIG=/app/configs/dataset.json
 
 ENV GIT_PYTHON_REFRESH=quiet
 USER appuser

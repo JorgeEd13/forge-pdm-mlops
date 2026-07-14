@@ -109,6 +109,34 @@ def test_roll_up_fails_loud_on_misalignment() -> None:
         generate.roll_up(frame, np.zeros(9))
 
 
+def test_the_dataset_config_is_resolvable_when_the_package_is_INSTALLED(tmp_path, monkeypatch) -> None:
+    """The worker runs the package installed, where `REPO_ROOT` points into site-packages.
+
+    This is the defect the F6 deploy hit with the smoke fixture (ADR-014) and the F14a worker
+    hit again with `configs/dataset.json`, on its first real cloud run — a native run cannot
+    see it, because the source tree is right there. So: the env override must win, and a
+    genuinely missing config must fail **loud** and say why.
+    """
+    # 1. The override wins (this is what Dockerfile.worker sets).
+    elsewhere = tmp_path / "dataset.json"
+    elsewhere.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(config.DATASET_CONFIG_ENV, str(elsewhere))
+    assert config.dataset_config_path() == elsewhere
+
+    # 2. Simulate the installed layout: nothing on any candidate path → fail loud, and name
+    #    the actual cause rather than surfacing deep inside the generator.
+    monkeypatch.setenv(config.DATASET_CONFIG_ENV, str(tmp_path / "nope.json"))
+    monkeypatch.setattr(config, "DATASET_CONFIG", tmp_path / "also-nope.json")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="site-packages"):
+        config.dataset_config_path()
+
+    # 3. Unset → the ordinary source-tree path, which really is there.
+    monkeypatch.delenv(config.DATASET_CONFIG_ENV)
+    monkeypatch.undo()
+    assert config.dataset_config_path().exists()
+
+
 def test_stored_columns_carry_no_labels() -> None:
     """The store keeps the question, never the answer (ADR-003)."""
     stored = generate.stored_columns()

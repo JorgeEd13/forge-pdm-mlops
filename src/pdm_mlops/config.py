@@ -23,6 +23,41 @@ CONFIGS_DIR: Path = REPO_ROOT / "configs"
 #: the pinned generator version, so every machine produces byte-identical data.
 DATASET_CONFIG: Path = CONFIGS_DIR / "dataset.json"
 
+#: Override for :func:`dataset_config_path`, set by any deploy that runs the package
+#: **installed** rather than from the source tree (the F14a generation worker does).
+DATASET_CONFIG_ENV = "DATASET_CONFIG"
+
+
+def dataset_config_path() -> Path:
+    """Where the canonical dataset recipe actually lives at run time.
+
+    ``REPO_ROOT`` is derived from this file's location, which is correct when the package
+    runs **from the source tree** and quietly wrong when it runs **installed**: in a
+    container, ``Path(config.__file__).parents[2]`` is ``/usr/local/lib/python3.12``, and
+    ``configs/dataset.json`` is not under it. That is not a hypothetical — it is the exact
+    bug the F6 deploy hit with the smoke fixture (ADR-014), and the F14a worker hit it again
+    with this file, on its first real cloud run.
+
+    So: honour an explicit ``DATASET_CONFIG`` env override first (what the worker image
+    sets), then fall back to the source-tree path, then to a ``configs/`` beside the working
+    directory. **Fails loud** rather than letting a caller pass a non-existent path down into
+    the generator, where it would surface as something less obvious.
+    """
+    candidates = [
+        Path(p)
+        for p in (os.environ.get(DATASET_CONFIG_ENV), DATASET_CONFIG, Path.cwd() / "configs" / "dataset.json")
+        if p
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "the canonical dataset config was not found. Tried: "
+        + ", ".join(str(c) for c in candidates)
+        + f". An INSTALLED package resolves paths off site-packages, not the repo — set "
+        f"{DATASET_CONFIG_ENV} to the file's real location (see ADR-014/ADR-026)."
+    )
+
 #: A tiny, committed, *reduced* slice of the generator's ``readings`` table.
 #: **Purpose: offline/CI smoke only — NOT a training set.** Models are always
 #: trained on the full dataset regenerated from ``DATASET_CONFIG`` (ADR-001); this

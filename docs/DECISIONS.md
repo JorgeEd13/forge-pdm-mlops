@@ -1305,3 +1305,47 @@ boundary. **Tests: 35 new** (`test_generate.py` 24 — caps, the roll-up rule in
 case, the store, retention, the worker, and two real-forge tests gated on `[generate]`;
 `test_generate_api.py` 11 — the S2 invariant, 202/400/404/409/503 contracts, poll → browse → report,
 and the promotion-invalidates-the-cache property).
+
+> **Deploy bug found on the first real build of the worker image (2026-07-14) — a container-only
+> defect, same class as the three F6 hit (ADR-014).** The worker image failed to build:
+> `No matching distribution found for can-telemetry-forge==0.2.0`. **`can-telemetry-forge` is not on
+> PyPI** — it is the companion showcase repo, and on every dev machine it is an *editable* install
+> from a sibling checkout. That is exactly what hid it: the `[generate]` extra, every local run and
+> the whole test suite work fine, because the dependency is already present. A native run **cannot**
+> see this failure; only a clean image build can.
+>
+> **Fix:** the worker image installs the generator from its **public git remote pinned to an
+> immutable commit** (`FORGE_REF`, a build arg), before resolving `.[cloud,generate]` — pip then sees
+> `can-telemetry-forge 0.2.0` already satisfied and never reaches for an index. A commit SHA is
+> *stronger* than the `==0.2.0` pin ADR-001 asks for, not weaker: a version can be re-cut, a SHA
+> cannot. It also means the fleet a user generates in the cloud comes from byte-identical generator
+> source to the one the model was trained against — which is the whole point of the pin.
+>
+> **The reusable lesson:** *an editable install of a sibling repo is a dependency you have not
+> actually declared.* It is invisible until something builds in a clean environment — and the more
+> "showcase repos that consume each other" a portfolio has, the more of these are waiting. The
+> serving image never hit it because it does not install `[generate]` at all; the split into two
+> images is what surfaced it.
+
+> **…and a SECOND container-only bug on the worker's first real cloud run: the same one F6 already
+> documented (2026-07-14).** The Cloud Run Job started, then failed with
+> `FileNotFoundError: '/usr/local/lib/python3.12/configs/dataset.json'`. **An installed package
+> resolves data files off `site-packages`, not the repo** — `config.REPO_ROOT` is
+> `Path(config.__file__).parents[2]`, which is correct from the source tree and silently wrong in a
+> container. This is **bug #2 of ADR-014, verbatim**, one image later and against a different file.
+>
+> **Fix:** `config.dataset_config_path()` — honour a `DATASET_CONFIG` env override (set by
+> `Dockerfile.worker`), then the source-tree path, then `./configs/`; **fail loud** naming
+> site-packages as the cause rather than letting a bad path surface deep inside the generator.
+> `tests/test_generate.py::test_the_dataset_config_is_resolvable_when_the_package_is_INSTALLED`
+> pins it.
+>
+> **Two things worth keeping from this.** First, the crash-honest design paid for itself immediately:
+> the worker died in a *different process, in the cloud*, and the failure still arrived where the user
+> was looking — the run row said `failed` with the exception on it, and the poll rendered it. That is
+> the whole reason `worker.execute_run` records the reason before re-raising. Second, and less
+> comfortable: **a documented bug is not a fixed class of bug.** ADR-014 wrote this defect down in
+> plain language, and it still recurred the first time a new deployable unit was added, because the
+> ADR fixed the *instance* (the fixture path) and not the *shape* (any repo-relative path in an
+> installed package). The check that generalizes is a test, not a paragraph — which is why one exists
+> now.

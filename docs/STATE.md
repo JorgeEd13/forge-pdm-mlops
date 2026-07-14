@@ -47,6 +47,28 @@ page polls, then browses the data and shows **one risk score per vehicle**.
   **20 vehicles × 7 days**, and the report claims *"which vehicles built toward a failure **during
   this window**"* — the forge only samples events *inside* the window, so "will it fail next week"
   has **no ground truth** and is not a claim this demo may make.
+- **⚠ Deploy bug, found on the first real build of the worker image (fixed) — a CONTAINER-ONLY defect,
+  same class as the three F6 hit.** The build died on `No matching distribution found for
+  can-telemetry-forge==0.2.0`: **the generator is not on PyPI** — it is the companion repo, installed
+  *editable* from a sibling checkout on every dev machine, which is precisely why nothing local ever
+  noticed. **Fix:** the worker image installs it from its **public git remote at an immutable commit**
+  (`FORGE_REF` build arg) before resolving `.[cloud,generate]`; a SHA is *stronger* than the `==0.2.0`
+  pin, not weaker. **Reusable lesson: an editable install of a sibling repo is a dependency you have
+  not actually declared** — invisible until something builds clean. The serving image never hit it
+  (it doesn't install `[generate]`); splitting into two images is what surfaced it.
+- **⚠ A SECOND container-only bug, on the worker's first real cloud run — and it is one F6 ALREADY
+  documented.** The Job started, then died on `FileNotFoundError:
+  '/usr/local/lib/python3.12/configs/dataset.json'`: **an installed package resolves data files off
+  site-packages, not the repo** (`config.REPO_ROOT` = `Path(config.__file__).parents[2]`). That is
+  **bug #2 of ADR-014, verbatim**, one image later against a different file. **Fix:**
+  `config.dataset_config_path()` (env override → source tree → `./configs/`, failing loud and naming
+  site-packages), `DATASET_CONFIG` set in `Dockerfile.worker`, and a test that pins it. **The
+  uncomfortable lesson: a documented bug is not a fixed CLASS of bug.** ADR-014 wrote this defect down
+  in plain English and it still recurred the moment a new deployable unit appeared — because the ADR
+  fixed the *instance* (the fixture path), not the *shape* (any repo-relative path in an installed
+  package). What generalizes is a test, not a paragraph. **The crash-honest design did pay off
+  though:** the worker died in another process, in the cloud, and the reason still landed on the run
+  row where the poller could see it.
 - **Next concrete step: F17 (Terraform / IaC).** Its entry question is the **state backend** — local
   gitignored state vs. a GCS free-tier bucket; the state file is secrets-adjacent (the Neon URL can
   land in it in plaintext) and never goes in git. The resource list is no longer hypothetical:
