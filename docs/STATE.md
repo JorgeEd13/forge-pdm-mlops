@@ -69,18 +69,32 @@ page polls, then browses the data and shows **one risk score per vehicle**.
   LightGBM + MLflow + the forge, so `queued → running` takes **~1–2 min** on a cold Job. It is async
   and nobody is blocked, but the demo is **not snappy** — do not describe it as if it were. (Job
   cold-start is a candidate for the same `--cpu-boost` treatment the API got.)
-- **⚠ HF Space is NOT propagated — BLOCKED, and deliberately not forced.** `scripts/deploy_space.sh`
-  failed on `git lfs` **smudge**: `assets/logo.png` → *"Object does not exist on the server: [404]"*
-  when checking out `space-deploy`. The failed checkout left the working tree contaminated
-  (space-deploy content under a `main` HEAD, `Dockerfile.worker` showing as deleted); recovered with
-  `git reset --hard origin/main` — **the documented recovery for exactly this**, and the reason both
-  F14a commits were pushed *before* touching the Space. **Not forced, on purpose:** LFS surgery on
-  this repo has contaminated `main` twice before, and the Space gains **nothing** from F14a anyway —
-  it has no `DATABASE_URL` and no worker, so generation there correctly reports itself unavailable.
-  The Space remains **live and healthy on the previous revision** (`/health` → `model_loaded:true`).
-  **To resume:** the LFS object is missing/unauthorized on the HF remote — check `huggingface-cli
-  login` / the LFS credentials, or re-push the object; `GIT_LFS_SKIP_SMUDGE=1` gets the checkout
-  through but do **not** push a branch whose LFS objects the server cannot resolve.
+- **HF Space: PROPAGATED and live on F14a — and the "blocker" was never the Space.** The first
+  attempt died on a `git lfs` smudge (`assets/logo.png` → *"Object does not exist on the server:
+  [404]"*), which I initially read as a broken Space. **It was not.** `main` is deliberately
+  **LFS-free**, so those objects were never pushed to GitHub — they live **only** on the HF remote.
+  With no `lfs.url` set, git-lfs resolved the download against the **default remote (`origin` =
+  GitHub)**, which correctly answered "I don't have that object". Pinning `lfs.url` at the Space
+  fixed it in one line (inert on `main`, which LFS-tracks nothing). **Live now:** `/health` →
+  `model_loaded:true`, and `/demo` renders the generate panel **correctly disabled**
+  (`GEN_ENABLED = false`) with `POST /demo/generate` → an honest **503** naming what is missing —
+  the graceful-degrade contract working on a target that genuinely has no database and no worker.
+- **⚠ `scripts/deploy_space.sh` had TWO real bugs, both now fixed — the second one I introduced.**
+  (1) **Its no-arg mode was broken by construction:** it cherry-picked "every commit on `main` that
+  `space-deploy` doesn't have", but the histories are **intentionally unrelated**, so
+  `space-deploy..main` is *every* commit on main — with no args it replayed the repo from **F0** and
+  drowned in add/add conflicts. It only ever looked like it worked because it was always called with
+  explicit commit arguments. The deploy is a **content sync**, not a history replay, so it now syncs
+  paths and makes one honest commit. (2) **LFS binaries cannot be synced with `git checkout main --
+  <path>`** — that stages main's blob *verbatim*, **bypassing the LFS clean filter**, so the commit
+  carries raw bytes and HF's pre-receive hook rejects the whole push. LFS paths are now written to
+  the worktree and `git add`-ed so the filter runs, with a guard that fails loud (legibly) if a
+  staged blob under an LFS path is not a pointer. The script also refuses to run on a dirty tree and
+  **fails loud if `Dockerfile` / `README.md` / `.gitattributes` are ever staged from main** —
+  overwriting the Space's `Dockerfile` is F6 bug #1, which served a no-bake image for weeks.
+  **`README.md` is deliberately NOT synced:** main's now advertises "generate a synthetic fleet",
+  which does **not** work on the Space — copying it would make the Space claim a capability it
+  doesn't have.
 - **⚠ Deploy bug, found on the first real build of the worker image (fixed) — a CONTAINER-ONLY defect,
   same class as the three F6 hit.** The build died on `No matching distribution found for
   can-telemetry-forge==0.2.0`: **the generator is not on PyPI** — it is the companion repo, installed
