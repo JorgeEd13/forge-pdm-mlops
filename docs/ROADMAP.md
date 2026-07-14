@@ -27,19 +27,27 @@ fixture.** F3/F4 make it a real system; F5 is the headline; F6 is gravy.
 
 > One risk score → a per-vehicle report naming which subsystem(s) need maintenance, with a
 > plain-language "why." **Read [`EPOCH2_PLAN.md`](EPOCH2_PLAN.md) §1 (locked decisions) before any
-> Epoch-2 phase** — the phase rows below are a map, not the reasoning. Product-first; F16/F17 depend
-> on F14's multi-service topology. ADRs: forge-pdm from **020**, can-telemetry-forge from **021**.
+> Epoch-2 phase** — the phase rows below are a map, not the reasoning. ADRs: forge-pdm from **020**,
+> can-telemetry-forge from **021**.
+>
+> **⚠ Execution order ≠ table order (resequenced 2026-07-14, EPOCH2_PLAN §1 S1/S2):**
+> **F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15.** F14 **splits**: its *topology* half
+> (F14a) leads, because that — not the report — is what F16/F17 are blocked on; its *report* half
+> (F14b) follows F12. **F17 runs before F16** (Terraform is justified by the project and its
+> resource enumeration feeds the K8s manifests; K8s is justified by the market). Phase **IDs are
+> stable** — only the order moved. The rows below are listed by ID, not by execution order.
 
 | Phase | Status | What |
 |------|--------|------|
-| **F10** | ☐ planned | Failure **taxonomy** (4 buckets) + forge flip to **independent per-mode labels** (drop earliest-wins) + pruned new signatures. Closes the "more failure modes" follow-up. |
-| **F11** | ☐ planned | **Multi-label committee** — one model per mode; LightGBM baseline vs the TCN contender through the promotion gate (winner **per mode**); recall-first per-mode thresholds. *Re-opens the sequence contender because the task changed (not against F2.7).* |
-| **F12** | ☐ planned | **Per-vehicle/region temporal features + narrative report** — deviation-from-own-baseline / region-z-score / slopes; SHAP attribution → templated "why." The features *are* the report. |
-| **F13** | ☐ planned | **Optional operator-enrichment** (exemplar: compaction duty → hydraulic-press wear) — leading/causal only, graceful degradation via native-NaN + feature-dropout. One exemplar, not the whole catalogue. |
-| **F14** | ☐ planned | **Generate-your-own-data demo** — co-deploy the forge; bounded **async** generation → store (capped) → browse → full report. Extends F8 (upload). The $0 envelope forces bounded+async. Creates the multi-service topology. |
-| **F15** | ☐ planned | **HITL feedback loop** — mark predictions TP/FP or report an FN → Prefect retrain through the same gate. Demonstrated on synthetic (honesty banner), not "learns in production." |
-| **F16** | ☐ planned | **Kubernetes (`kind`, local, $0)** — orchestrate the multi-service system. **Closes the K8s gate.** Needs F14. |
-| **F17** | ☐ planned | **IaC / Terraform** — codify the Cloud Run + Neon (+ bucket) deploy. **Closes the IaC gate.** Needs F14. |
+| **F10** | ☐ planned *(4th)* | Failure **taxonomy** (4 buckets) + forge flip to **independent per-mode labels** (drop earliest-wins) + pruned new signatures. Closes the "more failure modes" follow-up. |
+| **F11** | ☐ planned *(5th)* | **Multi-label committee** — one model per mode; LightGBM baseline vs the TCN contender through the promotion gate (winner **per mode**); recall-first per-mode thresholds. *Re-opens the sequence contender because the task changed (not against F2.7).* |
+| **F12** | ☐ planned *(6th)* | **Per-vehicle/region temporal features + narrative report** — deviation-from-own-baseline / region-z-score / slopes; SHAP attribution → templated "why." The features *are* the report. |
+| **F13** | ☐ planned *(7th)* | **Optional operator-enrichment** (exemplar: compaction duty → hydraulic-press wear) — leading/causal only, graceful degradation via native-NaN + feature-dropout. One exemplar, not the whole catalogue. |
+| **F14a** | ☐ planned — **◄ NEXT (1st)** | **Generate-your-own-data: the TOPOLOGY.** Co-deploy the forge; bounded **async** generation in a **separate deployable unit** (Cloud Run Job — *not* a `BackgroundTask`, **S2**) → capped store → browse → **per-vehicle risk roll-up** scored by today's single-label demo model. Extends F8 (upload). **Creates the multi-service topology F16/F17 depend on.** |
+| **F14b** | ☐ planned *(8th)* | **Generate-your-own-data: the REPORT.** Upgrade F14a's roll-up in place into the full multi-label narrative (committee + SHAP "why"). **No service boundary moves** — the rework S1 knowingly paid for. |
+| **F15** | ☐ planned *(9th)* | **HITL feedback loop** — mark predictions TP/FP or report an FN → Prefect retrain through the same gate. Demonstrated on synthetic (honesty banner), not "learns in production." |
+| **F16** | ☐ planned *(3rd)* | **Kubernetes (`kind`, local, $0)** — orchestrate the multi-service system. **Closes the K8s gate.** Needs **F14a**. Justified by the **market**, not by operational need — Cloud Run stays the production answer; say so out loud. `kind` is local ⇒ never claim "operated a cluster in production." |
+| **F17** | ☐ planned *(2nd)* | **IaC / Terraform** — codify the Cloud Run + generation job + Neon (+ bucket) deploy. **Closes the IaC gate.** Needs **F14a**. Justified by the **project**: F7 shipped imperative (`deploy_cloudrun_neon.sh` ran once; no source of truth to diff/recreate/destroy). Terraform knows the *resources* match — **not** that the app works. |
 
 ---
 

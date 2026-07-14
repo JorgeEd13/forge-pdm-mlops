@@ -1,10 +1,13 @@
 # Epoch 2 — from one risk score to a per-vehicle, multi-fault maintenance report
 
-**Status:** planned (not started). **Owner doc:** this file is the single source of truth
-for the Epoch-2 body of work (phases **F10–F17**). `docs/STATE.md` points here; per-phase
-ADRs get written into the relevant repo's `DECISIONS.md` at implementation time (forge-pdm
-from **ADR-020**, can-telemetry-forge from **ADR-021**) — but the *decision + rationale* are
-pre-captured here so nothing is lost between sessions.
+**Status:** planned (not started); **resequenced 2026-07-14** — see **S1** (F14 splits; its topology
+half leads) and **S2** (the generation worker is a separate deployable unit). Execution order is
+**F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**; phase IDs are stable, only the order
+moved. **Owner doc:** this file is the single source of truth for the Epoch-2 body of work (phases
+**F10–F17**). `docs/STATE.md` points here; per-phase ADRs get written into the relevant repo's
+`DECISIONS.md` at implementation time (forge-pdm from **ADR-020**, can-telemetry-forge from
+**ADR-021**) — but the *decision + rationale* are pre-captured here so nothing is lost between
+sessions.
 
 > **How to use this document.** Read the **Vision**, then **§1 Locked decisions** (the
 > irrecoverable reasoning — read this before touching any phase), then the phase you're on.
@@ -192,6 +195,56 @@ it, the rationale here is the thing to argue against first.
 - The enrichment "it improved recall" claim must be backed by a **real** effect in the synthetic
   ground truth (D6), never a staged correlation.
 
+### S1 — F14 splits; its topology half comes FIRST, ahead of F10–F13 *(decided 2026-07-14)*
+- **What.** F14 is cut in two. **F14a (topology)** — co-deploy the forge as its own deployable
+  unit, bounded async generation, capped store, browse — ships **before** F10–F13. **F14b
+  (report)** — the multi-label per-vehicle narrative over the generated data — ships after F12.
+  Execution order becomes: **F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15.**
+- **Why.** F16/F17 are blocked on F14's **multi-service topology**, not on its report. The topology
+  half depends on nothing in F10–F13: the forge exists (0.2.0), the API is live on Cloud Run, the
+  Neon store is live. Under the original order the two open gates — the stated reason Epoch 2 has a
+  back half — sat five sessions behind four phases of *modelling* work that closes neither of them.
+  F14a scored by today's single-label model, rolled up per vehicle, is already an honest product
+  increment ("generate a fleet → see which vehicles are at risk"); F10–F13 then upgrade **what the
+  report says**, in place, without moving a service boundary.
+- **This does not contradict §3's "product-first" preamble — it supersedes it.** That preamble was
+  a sequencing *map*, never a rationale-backed lock; no D-numbered decision in this section requires
+  the product phases to precede F14. The §1 decisions that *do* constrain F14 — **G1** (bounded +
+  async + capped) and **H1** (honesty banner) — are satisfiable today, unchanged.
+- **Cost, accepted with eyes open.** The report renderer gets paid for twice (single-label in F14a,
+  multi-label in F14b), and the stored-dataset schema may be paid for once when F10 flips the forge
+  to independent per-mode labels. Both are confined to the **presentation/scoring** layer; the
+  topology layer (job kickoff, worker, polling, caps, service split) is untouched by F10–F13.
+- **Alternative rejected.** Keep product-first and land F14 complete-in-one-pass (zero rework) —
+  rejected because it buys tidiness with ~5 sessions of gate latency on the one axis that is
+  actually blocking JD access.
+- **Trap it avoids.** A future session reads §3's "Sequencing is product-first" line, concludes the
+  reorder was drift, and reverts to F10-first. It was not drift. It was chosen against the
+  zero-rework alternative, for the reason above.
+- **⚠ What F14a must NOT become.** A thin excuse. It still owes a *real* topology (see S2) and a
+  *real* user-visible capability (generate → browse → per-vehicle risk roll-up). If it degenerates
+  into "a second container that does nothing", F16 loses its justification and S1 was a mistake.
+- **ADR:** forge-pdm ADR-026 (written at F14a implementation time, together with S2).
+
+### S2 — Generation is a SEPARATE DEPLOYABLE UNIT, not a FastAPI `BackgroundTask` *(decided 2026-07-14; resolves the §5 open question)*
+- **What.** F14a's async generation runs as its **own deployable unit** — a **Cloud Run Job** (or a
+  second Cloud Run service) invoked by the API — writing to the shared store. Not
+  `BackgroundTasks`, not a thread in the API process.
+- **Why — this single choice is what makes F16 and F17 honest.** A `BackgroundTask` leaves the
+  system as **one container**. K8s over one container is precisely the resume-driven development
+  that a reviewer can smell, and Terraform would have one service to codify. A real web+worker
+  split gives: a genuine second lifecycle/scaling unit → **Deployment + Job** on `kind` (F16), and
+  a second real resource for Terraform to codify (F17). It also **costs nothing** — Cloud Run Jobs
+  are free-tier eligible, and a scale-to-zero worker is *cheaper* than an always-on one.
+- **Why it's the right engineering call anyway, gates aside.** G1 already forbids synchronous
+  in-request generation (free-tier CPU/RAM/timeout). Once generation is async and bounded, an
+  out-of-process unit is the *normal* answer — the API stays responsive and a runaway generation
+  can't wedge the serving container.
+- **Trap it avoids.** Reaching for `BackgroundTasks` in F14a because it is three lines of code, and
+  thereby silently destroying the justification for both remaining gates. If you find yourself
+  writing `background_tasks.add_task(...)`, stop and re-read this decision.
+- **ADR:** forge-pdm ADR-026 (with S1).
+
 ---
 
 ## §2 — The failure taxonomy (four buckets)
@@ -219,9 +272,21 @@ leakage-safety note). Structure:
 
 ## §3 — Phases (F10–F17)
 
-Sequencing is **product-first**: build the report (F10–F13), then the interactive system (F14),
-then the loop (F15), then the gates (F16–F17). **F16/F17 depend on F14** — the multi-service
-topology is what legitimately earns K8s + IaC. One phase per session.
+**Execution order (per S1, 2026-07-14):**
+
+> **F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**
+
+Phase **IDs are stable** (F16 = K8s, F17 = IaC) — they are cited from the career system and from
+the pre-registered deep-dives; only the *order* moved. The topology-bearing half of F14 comes
+first because that — and not the report — is what F16/F17 are blocked on (**S1**); the generation
+worker is a separate deployable unit because that is what makes both gates honest (**S2**); and
+**F17 runs before F16** because Terraform is justified *by the project* (F7 shipped imperative — a
+real, nameable defect) while K8s is justified *by the market*, and enumerating the real resources
+in Terraform is the direct input to the K8s manifests (the dependency is one-way). One phase per
+session.
+
+*(The superseded "product-first" ordering — F10–F13, then F14, then the gates — is retained in
+S1's rationale, along with why it was reversed. Do not silently restore it.)*
 
 ### F10 — Failure taxonomy + forge multi-mode independence
 - **Objective.** Enumerate the taxonomy (§2) and flip the forge from earliest-wins to
@@ -271,17 +336,40 @@ topology is what legitimately earns K8s + IaC. One phase per session.
 - **⚠ DO NOT MISREAD.** Implement **one** exemplar, not the whole bucket-3 catalogue. Enrichment
   features are duty/context (leading), never symptoms of the failure.
 
-### F14 — Generate-your-own-data interactive demo
+### F14a — Generate-your-own-data: the topology *(NEXT — first phase of Epoch 2, per S1)*
 - **Objective.** Co-deploy the forge so a user generates a bounded synthetic dataset, stores it,
-  browses it, and gets a full multi-label report — the "test the possibilities" UX.
-- **How.** Bounded **async** generation job (kick off → poll → view); store a capped sample
-  (Neon/object store); paginated browse; run the committee → report. Relates to/extends F8
-  (bring-your-own-data upload, ADR-017) — that's *upload yours*, this is *generate one*.
-- **Key decisions.** G1 (the $0 envelope dictates bounded + async + capped), H1.
-- **DoD.** A user generates a small dataset, views it, and gets a per-vehicle report — all inside
-  the free Cloud Run + Neon envelope; the honesty banner holds.
-- **⚠ DO NOT MISREAD.** Generation is bounded + async by necessity (G1), not sync-in-request.
-  This phase is what creates the multi-service topology F16/F17 depend on.
+  browses it, and gets a **per-vehicle risk roll-up** — scored by **today's** single-label demo
+  model. This is the phase that **creates the multi-service topology** F16/F17 depend on.
+- **How.** The API exposes *kick off → poll → view*. Generation runs in a **separate deployable
+  unit** (Cloud Run Job or a second service — **S2, non-negotiable**), which runs the forge and
+  writes a **capped sample** to the store (Neon / object store). Paginated browse. Score the
+  generated rows through the existing `_score_frame` core (F8, ADR-017) and roll the row-level
+  probabilities up **per vehicle** (max / high-risk-share over the unit's rows). Extends F8 —
+  that's *upload yours*, this is *generate one*.
+- **Key decisions.** **S1** (this half comes first), **S2** (separate unit, not `BackgroundTask`),
+  **G1** ($0 envelope ⇒ bounded + async + capped), **H1** (honesty).
+- **DoD.** A user kicks off a generation, polls it to completion, browses the stored sample, and
+  sees a per-vehicle risk roll-up — all inside the free Cloud Run + Neon envelope. The generation
+  worker is a **genuinely separate deployable unit** (asserted: the API process does not run the
+  forge). The `demo=fixture` honesty banner holds on the roll-up. Caps enforced and fail loud
+  (fleet size, window, stored rows) — 4xx, never a wedged container. Offline tests.
+- **⚠ DO NOT MISREAD.** (a) Generation is bounded + async **out-of-process** — not sync-in-request
+  (G1), and not a `BackgroundTask` (S2). (b) The report here is deliberately the **existing
+  single-label risk score**, rolled up per vehicle — the multi-label narrative is **F14b**, after
+  F12. Do not pull the report forward; do not let F14a become "a second container that does
+  nothing" (S1's ⚠ block).
+- **ADR:** forge-pdm ADR-026 (topology + async-as-separate-unit + the S1 sequencing rationale).
+
+### F14b — Generate-your-own-data: the multi-label report *(after F12)*
+- **Objective.** Upgrade F14a's per-vehicle roll-up **in place** into the full multi-label
+  narrative report (the Vision's target output: *"Vehicle 4021 — press + engine flagged…"*).
+- **How.** Swap the single-score roll-up for the committee (F11) + the SHAP-attributed narrative
+  (F12) over the generated dataset. **No service boundary moves** — this is a
+  presentation/scoring-layer change on the topology F14a already shipped.
+- **Key decisions.** D2 (committee), D5 (the features are the report), H1.
+- **DoD.** The generated dataset yields a per-vehicle report naming the flagged subsystem(s) with
+  attributed reasons; the F14a caps, async mechanism, and honesty banner are untouched.
+- **⚠ DO NOT MISREAD.** This is the **rework S1 knowingly paid for**. It is not a redo of F14a.
 
 ### F15 — HITL feedback loop (TP / FP / FN)
 - **Objective.** Let users mark predictions TP/FP or report a missed FN; fold feedback into a
@@ -294,20 +382,48 @@ topology is what legitimately earns K8s + IaC. One phase per session.
 - **⚠ DO NOT MISREAD.** Do not claim "learns from real users in production." It demonstrates the
   loop mechanics.
 
-### F16 — Kubernetes (kind, local, $0) — closes the K8s gate
-- **Objective.** Orchestrate the now-multi-service system (forge generator + model API + async
-  worker + store) under K8s, planned via `kind` locally at $0.
-- **How.** Manifests/Helm for the services; local `kind` cluster; documented.
-- **DoD.** The multi-service system runs on a local `kind` cluster from committed manifests.
-- **⚠ DO NOT MISREAD.** This is legitimate *because* F14 made the system genuinely multi-service —
-  it is not box-ticking bolted onto a single container. Requires F14 first.
+### F17 — IaC / Terraform — closes the IaC gate *(runs BEFORE F16, per S1)*
+- **Objective.** Codify the managed deploy (Cloud Run API service + the F14a generation job + Neon
+  + any bucket + Artifact Registry + Secret Manager + IAM) as Terraform.
+- **The honest justification — name the defect.** F7 shipped **imperative**: the live deploy exists
+  as `scripts/deploy_cloudrun_neon.sh`, a sequence of `gcloud` commands someone ran **once**. There
+  is no source of truth for what the infra *should* be — it cannot be diffed, reviewed, recreated
+  in another project/region, or destroyed cleanly. That is a real gap, not an invented one. **This
+  is why F17 goes first: it is justified by the PROJECT.** (F16 is justified by the *market* — see
+  its ⚠ block. Do not defend the two the same way.)
+- **How.** Terraform over the F7 + F14a managed resources; `plan`/`apply`; documented tear-down.
+  The deploy script is the spec — read it, don't re-derive the resource list.
+- **Why before F16.** Enumerating the real resources in HCL (registry · api service · generation
+  job · secret · Neon · bucket · IAM) **is** the input to the K8s manifests. The dependency runs
+  one way: Terraform-first makes F16 cheaper; F16-first does nothing for F17.
+- **Entry question (resolve at phase start).** **State backend.** The state file is *not* source —
+  it is Terraform's **belief** about what exists, it does **not** go in git, and it is
+  **secrets-adjacent** (the Neon connection string can land in it in plaintext). Decide: local
+  state (gitignored) vs. a GCS free-tier bucket backend. Check the choice against the zero-budget
+  constraint before committing to it.
+- **DoD.** The managed infra is reproducible from committed Terraform against free-tier resources;
+  `plan` on the live deploy is clean (or its drift is explained); tear-down documented; no secret
+  in the repo and no state file in git.
+- **⚠ DO NOT MISREAD.** **Terraform does not know whether your application works.** It knows the
+  *resources exist and match the config* — it will print `Apply complete! 0 errors` over a Cloud
+  Run that 500s on every request. Do not claim it validates the app. Requires **F14a** (not the
+  full F14) — F14a is what gives it the second real resource to codify.
 
-### F17 — IaC / Terraform — closes the IaC gate
-- **Objective.** Codify the managed deploy (Cloud Run services + Neon + any bucket) as Terraform.
-- **How.** Terraform over the F7/F14 managed resources; state + plan; documented.
-- **DoD.** The managed infra is reproducible from committed Terraform against free-tier resources.
-- **⚠ DO NOT MISREAD.** More managed services (from F14) is what gives Terraform something real to
-  codify. Requires F14 first.
+### F16 — Kubernetes (kind, local, $0) — closes the K8s gate *(runs AFTER F17, per S1)*
+- **Objective.** Orchestrate the multi-service system (model API + the generation worker + store)
+  under K8s, via a local `kind` cluster at $0.
+- **How.** Manifests/Helm for the services (Deployment for the API + Job/Deployment for the
+  generation worker; the existing F4 `/health` slots in as the **readiness probe**); local `kind`
+  cluster; documented.
+- **DoD.** The multi-service system runs on a local `kind` cluster from committed manifests.
+- **⚠ DO NOT MISREAD — the honesty this phase lives or dies on.** (a) It is legitimate *because*
+  **F14a** made the system genuinely multi-service (**S2**: a real separate deployable unit) — it
+  is **not** box-ticking bolted onto a single container. **Requires F14a first.** (b) **This
+  project does not need Kubernetes.** Cloud Run + a job remains the right production answer, *after*
+  F16 too. F16 is justified **by the market** (a hard requirement in a large slice of MLOps JDs)
+  and by the one idea that transfers — declarative desired state + a reconciliation loop — **not**
+  by operational need. Say that out loud; it reads as judgment. (c) `kind` is **local**: no cloud
+  LB, no real ingress, no node autoscaling. **Never claim "operated a cluster in production."**
 
 ---
 
@@ -331,9 +447,19 @@ topology is what legitimately earns K8s + IaC. One phase per session.
 
 ## §5 — Open questions to resolve at phase entry (not yet decided)
 
+- **F14a:** the exact fleet/window/row caps that fit Neon 0.5 GB + the Cloud Run request timeout;
+  the per-vehicle roll-up rule for the interim single-label report (max-over-rows vs.
+  high-risk-share). *(The async-mechanism question — worker vs. background task — is **CLOSED**:
+  see **S2**. It is a separate deployable unit. Do not reopen it in F14a; both remaining gates
+  depend on it.)*
+- **F17:** the **state backend** — local state (gitignored) vs. a GCS free-tier bucket. The state
+  file is secrets-adjacent (Neon connection string) and never goes in git.
+- **F16:** Helm vs. plain manifests; whether the generation worker maps to a K8s `Job` or a
+  long-lived `Deployment` consuming a queue.
 - **F10:** which bucket-2 modes make the cut (prune list), and their exact signature signals.
+  **Also:** whether the label flip emits a derived union label (`failure_within_h_any` = OR over
+  modes) for backward compatibility with the F14a-era single-score model — cheap, and it keeps the
+  live demo scoring while the committee (F11) is still being built.
 - **F11:** the per-mode recall threshold targets (how far to bias toward recall).
 - **F12:** report template wording + how many top attributions to surface per subsystem.
-- **F14:** async job mechanism within the free tier (worker vs. background task) and the exact
-  fleet/window caps that fit Neon 0.5 GB.
 - **F2.9 activation:** whether the RUL/graded-label reframing is adopted here (D1 note).

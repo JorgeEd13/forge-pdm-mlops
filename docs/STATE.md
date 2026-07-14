@@ -1,6 +1,6 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-10 (session: **Epoch-2 plan drafted** — per-vehicle multi-label report + interactive demo + K8s/IaC gates)
+Updated: 2026-07-14 (session: **Epoch-2 RESEQUENCED** — F14 splits, its topology half leads; F17 before F16. No code yet.)
 
 ## Current focus
 
@@ -8,16 +8,45 @@ Updated: 2026-07-10 (session: **Epoch-2 plan drafted** — per-vehicle multi-lab
 **§1 Locked decisions** before touching any Epoch-2 phase — it captures the irrecoverable reasoning
 (why the sequence contender re-opens despite F2.7; committee-of-specialists; independent multi-mode
 labels + the leakage subtlety; per-vehicle/region features = the report; optional enrichment;
-GPU-train/CPU-serve; the $0 envelope; honesty boundaries). This closes the STATE follow-up "plan for
-adding more failure modes" (below) and the **K8s + IaC gates** (F16/F17, which depend on F14's
-multi-service topology). Compute is **notebook-only** now (see career memory `resources_compute`).
+GPU-train/CPU-serve; the $0 envelope; honesty boundaries; **and now S1/S2, the sequencing**). This
+closes the STATE follow-up "plan for adding more failure modes" (below) and the **K8s + IaC gates**
+(F16/F17). Compute is **notebook-only** now (see career memory `resources_compute`).
 
-- **Next concrete step:** **F10 opener** — draft the failure taxonomy (EPOCH2_PLAN §2) grounded in
-  can-telemetry-forge's actual signal spec (each candidate mode → observable channel + feasible
-  signature + leakage note), then prune bucket-2 and flip the forge to independent per-mode labels.
-- **Sequencing:** product-first F10→F11→F12→F13→F14→F15→F16→F17, one phase/session. F16/F17 need F14.
-- **ADR numbering reserved:** forge-pdm from **ADR-020**, can-telemetry-forge from **ADR-021** (map in
-  EPOCH2_PLAN §1).
+**Session 2026-07-14 — the Epoch-2 back half was RESEQUENCED (planning only; no code).** Two calls,
+both recorded as locked decisions in EPOCH2_PLAN §1 so a future session can't quietly revert them:
+
+- **S1 — F14 splits, and its topology half leads.** F16/F17 are blocked on F14's **multi-service
+  topology**, not on its report — and that topology half depends on **nothing** in F10–F13 (the
+  forge exists at 0.2.0, the API is live on Cloud Run, the Neon store is live). So **F14a**
+  (co-deploy the forge · bounded async generation · capped store · browse · per-vehicle risk
+  roll-up scored by *today's* single-label demo model) ships **first**, and **F14b** (the
+  multi-label narrative report) ships after F12. The old "product-first" ordering put the two open
+  gates — the stated reason Epoch 2 *has* a back half — five sessions behind four phases of
+  *modelling* work that closes neither. **Knowingly paid cost:** the report renderer twice, and
+  maybe the stored schema once — both confined to the presentation layer. *(§3's "Sequencing is
+  product-first" preamble was a map, not a locked decision; no D-numbered decision required it.)*
+- **S2 — the generation worker is a SEPARATE DEPLOYABLE UNIT** (Cloud Run Job / a second service),
+  **not** a FastAPI `BackgroundTask`. This resolves the §5 open question and is **the** load-bearing
+  choice of the whole back half: a `BackgroundTask` leaves the system as *one container*, which
+  would make F16 textbook resume-driven development and leave F17 with one resource to codify. A
+  real web+worker split maps to Deployment+Job on `kind` and gives Terraform a second real resource
+  — and costs **$0** (Cloud Run Jobs are free-tier eligible).
+- **F17 runs before F16.** Terraform is justified **by the project** (F7 shipped imperative —
+  `deploy_cloudrun_neon.sh` is a sequence someone ran once; no source of truth to diff, recreate, or
+  destroy: a real, nameable defect). K8s is justified **by the market** (a hard JD requirement) and
+  is honestly *overkill here* — Cloud Run stays the production answer. Enumerating the real
+  resources in HCL is also the direct input to the K8s manifests, so the dependency runs one way:
+  Terraform-first makes F16 cheaper; F16-first does nothing for F17. **K8s remains the #1 gate by
+  importance** — it goes second only because it gets cheaper after Terraform.
+
+- **Next concrete step:** **F14a opener** — resolve the caps (fleet/window/stored rows that fit Neon
+  0.5 GB + the Cloud Run request timeout) and the roll-up rule (max-over-rows vs. high-risk-share),
+  then build the kick-off → poll → view surface with generation in its **own** deployable unit (S2).
+- **Execution order:** **F14a → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**, one phase/session.
+  Phase **IDs are stable** — only the order moved.
+- **ADR numbering:** forge-pdm from **ADR-020**, can-telemetry-forge from **ADR-021** (map in
+  EPOCH2_PLAN §1). D1–D7 pre-assign forge-pdm **020–025**; **ADR-026** is reserved for F14a
+  (topology + async-as-separate-unit + the S1 sequencing rationale).
 
 ---
 
