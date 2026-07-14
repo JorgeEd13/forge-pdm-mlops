@@ -196,6 +196,59 @@ it, the rationale here is the thing to argue against first.
 - The enrichment "it improved recall" claim must be backed by a **real** effect in the synthetic
   ground truth (D6), never a staged correlation.
 
+### D8 — The demo's product SHAPE: generate-first, and the report is the destination *(recorded 2026-07-14, from Jorge — previously UNRECORDED)*
+
+**⚠ This is the product intent the whole `/demo` exists to serve, and until 2026-07-14 it lived only
+in Jorge's head — it was in NO doc, NO ADR, NO issue. F14a shipped the *topology* for it and left the
+*shape* wrong. Read this before touching `serve.py`'s page layout, or you will "polish" the page in
+the wrong direction.**
+
+- **The intended flow, in order.** A visitor lands and **generates a synthetic fleet first** — that is
+  the headline act, not an afterthought. They (1) choose the generation parameters, (2) **generate**,
+  (3) **inspect the resulting dataset** in a small data-grid ("like the Data Wrangler extension in
+  VS Code" — a real table they can scroll and eyeball, so the synthetic data is *seen*, not asserted),
+  (4) get a **prediction over that generated fleet**, produced by the **committee** (D2 — each failure
+  mode scored by the architecture that won *that mode*, side by side, without interfering), and
+  (5) receive a **full per-vehicle report** at the end (D5 / F12).
+- **What is actually shipped today, and why it is wrong.** The page leads with the **single-row
+  slider form**, then bring-your-own-data (F8), then *"Generate your own fleet"* **third**, with
+  *"Recent predictions"* directly beneath it. So the flagship capability is buried under two lesser
+  ones and the page's narrative reads backwards. **This is a layout defect, not a missing feature** —
+  F14a built the machine and left it in the basement.
+- **Why this is not cosmetics.** The demo IS the showcase's argument. "Generate data → look at it →
+  a committee of specialists scores it → here is a report you can act on" is the story the four
+  showcases exist to tell. Leading with a nine-slider J1939 form tells a different, smaller story.
+- **What this does NOT change.** The topology (S2 — the worker is a separate deployable unit), the
+  honesty banner (H1), and the caps (G1/G2) all stand. This is the **presentation** layer — exactly
+  the layer S1 knowingly agreed to pay for twice.
+- **Status honesty, both directions.** F14a's DoD was the **topology**, and it met it — do **not**
+  retro-fail it. But the product shape above was never written down, so it was never anyone's DoD,
+  and it would have been silently dropped. It is now recorded. **The `/demo` may NOT be called
+  "done" until this shape is real**, and no phase may claim the demo is finished before it.
+- **ADR:** lands with the phase that implements it (F14b, or an earlier UX pass — see §5).
+
+### G2 — The shared store EVICTS other users' finished runs — a real multi-tenancy defect *(found 2026-07-14, from Jorge's free-tier concern)*
+
+- **The defect, concretely.** `store_gen.prune()` enforces a **global** budget
+  (`MAX_TOTAL_STORED_ROWS = 200_000`, ADR-026) by evicting the **oldest finished runs**. It correctly
+  refuses to evict an **in-flight** run, and refuses to evict the run it is handing back (`keep=`).
+  **It does not protect a finished run that a user is still reading.** So: user A generates, gets a
+  report, starts browsing; users B, C, D generate; **A's fleet is deleted out from under them
+  mid-browse** and the report 404s or empties while they look at it.
+- **This is a PUBLIC demo. Concurrency is not a hypothetical — it is the SUCCESS case.** The store is
+  shared, global and FIFO, which is the wrong shape for N simultaneous strangers.
+- **Jorge's proposed direction (recorded, NOT yet decided): keep the generated dataset LOCAL to the
+  visitor** — in the browser (IndexedDB / localStorage) rather than the shared Neon store — so
+  simultaneous users cannot evict each other and cannot exhaust the free tier at all.
+- **The tension it must resolve, honestly.** The worker (S2) runs **out of process, in the cloud**; it
+  cannot write into a visitor's browser. A local-storage design therefore means the browser must
+  **fetch the generated rows and own them** from that point, with the server holding them only
+  transiently. That is a real change to F14a's **read path**, not a config tweak. **It must not be
+  allowed to quietly collapse the web/worker split (S2)** — that split is what makes F16/F17 honest.
+- **⚠ Do NOT "fix" this by raising the cap.** The cap is a **storage** budget (ADR-026, measured
+  ~432 B/row). Raising it delays the collision, does not remove the eviction race, and puts the free
+  tier at risk — which is the constraint (G1) that started this.
+
 ### S1 — F14 splits; its topology half comes FIRST, ahead of F10–F13 *(decided 2026-07-14)*
 - **What.** F14 is cut in two. **F14a (topology)** — co-deploy the forge as its own deployable
   unit, bounded async generation, capped store, browse — ships **before** F10–F13. **F14b
@@ -465,6 +518,13 @@ S1's rationale, along with why it was reversed. Do not silently restore it.)*
   mattered most wasn't on this list at all:** codifying the IAM proved the deploy script's
   `run.invoker` binding was **the wrong role** — generation only ever worked because the default
   compute SA holds `roles/editor`.
+- **The `/demo` product shape + multi-tenancy (D8 / G2) — WHICH PHASE OWNS THEM?** Not yet assigned,
+  deliberately: (a) does the **generate-first re-layout** (D8) happen as a small UX pass *before*
+  F10–F13, or land with **F14b** when the committee report exists anyway? (b) does the **dataset
+  preview grid** ("Data Wrangler"-like) ship with the re-layout or with the report? (c) does **G2** get
+  solved by browser-local storage (Jorge's direction — and if so, how does the browser take ownership
+  of rows a *cloud* worker produced, **without** collapsing the S2 split?), by per-visitor scoping +
+  TTL in Neon, or by both? **⚠ The `/demo` may not be called "done" until D8 is real.**
 - **F16:** Helm vs. plain manifests; whether the generation worker maps to a K8s `Job` or a
   long-lived `Deployment` consuming a queue.
 - **F10:** which bucket-2 modes make the cut (prune list), and their exact signature signals.

@@ -87,6 +87,42 @@ DoD: proof the config describes reality rather than merely looking plausible.
   > runs, and F17 rewrote them on `main`. The Fluxo-L item-11 check includes `scripts/` in its diff, so
   > **it will flag this next session as a false positive.** It is not divergence that matters: the app
   > code is identical. Syncing GCP deploy scripts onto the Space branch would add noise, not safety.
+- **⚠ OPEN — the `/demo` product shape is WRONG, and it was never written down (recorded 2026-07-14,
+  from Jorge). NEW: `EPOCH2_PLAN.md` §1 **D8** (the shape) + **G2** (a real multi-tenancy defect).**
+  Read D8 before touching the page layout. Three concrete defects, none of them yet fixed:
+  1. **Generation is buried.** The page order is single-row form → upload (F8) → **Generate fleet**
+     (3rd) → *Recent predictions*. The intended product is **generate-FIRST**: pick params →
+     generate → **inspect the dataset in a scrollable grid** (a "VS Code Data Wrangler"-like view,
+     so the synthetic data is *seen*, not asserted) → committee scores it (D2) → **full report**
+     (D5/F12). F14a built the machine and left it in the basement. **This is a layout defect, not a
+     missing feature** — and the `/demo` may **not** be called "done" until D8 is real.
+  2. **The theme button renders EMPTY until the first click.** Diagnosed, not guessed:
+     `applyTheme()` is the **last statement inside `applyLang()`** (`serve.py` ~L1464) and is called
+     nowhere else at startup — while the *click* handler calls it directly. So **any** throw earlier
+     in `applyLang()` (`buildFields()`, or the F14a-added `buildGenFields()`) silently leaves the
+     button unlabelled, and clicking "fixes" it. **Fix = decouple theme init from `applyLang()`**;
+     don't paper over it — find out *what throws*, because that throw is also skipping whatever else
+     came after it.
+  3. ***"Recent predictions — logged to a managed Postgres instance (Neon)"* sits directly under the
+     generate panel**, where it reads as if it belonged to fleet generation. It does not: it is the
+     **F7 single-row prediction log**. Wrong neighbour, wrong implied ownership.
+- **⚠ G2 — a REAL multi-tenancy defect, not cosmetic (see the plan).** `store_gen.prune()` evicts the
+  oldest **finished** runs against a global 200k-row cap. It protects in-flight runs and the run being
+  handed back — but **not a finished run a user is still reading**. Under concurrent visitors (the
+  *success* case for a public demo) **one user's fleet is deleted mid-browse by another user's
+  generation**. Jorge's direction: keep the generated dataset **local to the browser** so simultaneous
+  users can't evict each other or exhaust the free tier. **⚠ Do NOT "fix" it by raising the cap**
+  (delays the collision, doesn't remove the race, risks the free tier — G1), and **do NOT let a
+  local-storage design quietly collapse the web/worker split (S2)**, which is what makes F16/F17 honest.
+- **Fluxo K ran (2026-07-14) — and it DELIBERATELY HELD one thing. Do not "helpfully" add it back.**
+  The GitHub profile card gained **one** bullet: the **Terraform / IaC + separate worker job** axis
+  (done, honest, no traffic risk). It did **NOT** gain the *"generate your own fleet"* capability,
+  even though that shipped in F14a and works. **Why the hold:** the profile README is a **traffic
+  driver**, and **G2 gets WORSE with traffic** — advertising a feature whose known defect is "a
+  concurrent visitor's fleet is deleted mid-browse" points an audience straight at the failure. It is
+  also buried third on the page (D8). **Release the hold once D8 + G2 land**, and it becomes a strong
+  claim instead of a liability. (Jorge's standing constraint: don't overflood the public README with
+  material that will need sanitizing later.)
 - **Next: F16 (Kubernetes on `kind`).** ⚠ Its justification is **the MARKET, not the project** — do
   **not** defend it the way F17 was defended. F17 fixed a defect this repo genuinely had; F16 will
   not, and must say so out loud (`EPOCH2_PLAN.md` §3, F16's ⚠ block).
