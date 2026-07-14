@@ -383,7 +383,7 @@ S1's rationale, along with why it was reversed. Do not silently restore it.)*
 - **⚠ DO NOT MISREAD.** Do not claim "learns from real users in production." It demonstrates the
   loop mechanics.
 
-### F17 — IaC / Terraform — closes the IaC gate *(runs BEFORE F16, per S1)*
+### F17 — IaC / Terraform — closes the IaC gate — **DONE (2026-07-14, ADR-027)**
 - **Objective.** Codify the managed deploy (Cloud Run API service + the F14a generation job + Neon
   + any bucket + Artifact Registry + Secret Manager + IAM) as Terraform.
 - **The honest justification — name the defect.** F7 shipped **imperative**: the live deploy exists
@@ -457,8 +457,14 @@ S1's rationale, along with why it was reversed. Do not silently restore it.)*
   full-data model. `max` loses *structurally*: it is a one-row statistic and the forge deliberately
   injects outliers, so a single spurious spike flags a healthy vehicle. *(The async-mechanism
   question was already **CLOSED** by **S2** — a separate deployable unit. It shipped that way.)*
-- **F17:** the **state backend** — local state (gitignored) vs. a GCS free-tier bucket. The state
-  file is secrets-adjacent (Neon connection string) and never goes in git.
+- ~~**F17:** the **state backend**.~~ **RESOLVED at implementation, 2026-07-14 — owner: ADR-027**
+  (don't restate it here). In brief: a **private, versioned, REGIONAL** GCS bucket — regional
+  because multi-region `US` is *not* free-tier eligible. Two things this line did not anticipate,
+  both settled in ADR-027: **Neon** is NOT managed by Terraform (manual prerequisite; its URL is a
+  `sensitive` var), and the live infra was **imported**, not recreated. **And the finding that
+  mattered most wasn't on this list at all:** codifying the IAM proved the deploy script's
+  `run.invoker` binding was **the wrong role** — generation only ever worked because the default
+  compute SA holds `roles/editor`.
 - **F16:** Helm vs. plain manifests; whether the generation worker maps to a K8s `Job` or a
   long-lived `Deployment` consuming a queue.
 - **F10:** which bucket-2 modes make the cut (prune list), and their exact signature signals.

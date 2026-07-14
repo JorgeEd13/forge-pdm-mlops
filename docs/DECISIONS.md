@@ -1349,3 +1349,168 @@ and the promotion-invalidates-the-cache property).
 > ADR fixed the *instance* (the fixture path) and not the *shape* (any repo-relative path in an
 > installed package). The check that generalizes is a test, not a paragraph — which is why one exists
 > now.
+
+---
+
+## ADR-027 — IaC (F17): adopt the live infra with `import` rather than recreate it; state in a private versioned GCS bucket; Neon stays a manual prerequisite — and codifying the IAM proved the permission model was **wrong**
+
+**Status:** accepted (2026-07-14). **Phase:** F17 — closes the **IaC gate**. Runs *before* F16 per
+`EPOCH2_PLAN.md` §1 (S1). Requires **F14a**, which is what gave Terraform a second real resource to
+codify.
+
+**Context — name the defect, because it is real.** F7 shipped **imperative**. The live deploy
+existed as `scripts/deploy_cloudrun_neon.sh`: a sequence of `gcloud` commands someone ran once. There
+was no source of truth for what the infrastructure *should* be, so it could not be diffed, reviewed,
+recreated in another project or region, or destroyed cleanly. F14a made this **bigger, not smaller** —
+the deploy grew from two resources to five (Artifact Registry · the Cloud Run **service** · the Cloud
+Run **job** · Secret Manager · IAM).
+
+**⚠ The asymmetry that must not be blurred: Terraform is justified by the PROJECT; Kubernetes (F16)
+is justified by the MARKET.** F17 fixes a defect this repo actually has. F16 will not, and will have
+to say so. Defending them the same way is the mistake.
+
+### Decision 1 — `import`, not recreate
+
+The infrastructure already exists, so the first job was not to build it but to make Terraform's model
+**agree with reality**. Config-driven `import` blocks (Terraform ≥ 1.5), committed in `imports.tf`,
+not `terraform import` CLI calls — a block appears in `plan` before it does anything and leaves a
+record of how each resource was adopted; the CLI mutates state as an invisible side effect.
+
+Recreating was rejected: it would destroy the Artifact Registry (taking both images with it), drop
+the live demo, and buy nothing. **A clean `plan` against the live deploy IS the DoD** — it is the
+proof that the config describes reality rather than merely looking plausible. Achieved: `terraform
+plan` → *"No changes. Your infrastructure matches the configuration."*
+
+The drift found while converging was small and is **explained, not hidden**: `client`/`client_version`
+(`"gcloud"` → `null`) on both Cloud Run units — the imperative→declarative handover, stamped into the
+resources themselves — and an Artifact Registry `description` that still said *"serving images"*,
+which stopped being true when F14a added the worker image.
+
+### Decision 2 — state in a private, versioned, **regional** GCS bucket
+
+**The state file is not source. It is Terraform's *belief* about what exists.** It never goes in git,
+and it is **secrets-adjacent**: `google_secret_manager_secret_version` carries the Neon connection
+string, and `sensitive = true` redacts a value from CLI *output* — it does **not** encrypt it in
+state. The Neon URL is in that bucket in plaintext. That is a property of Terraform, and it is the
+reason the backend is a private bucket with public-access-prevention **enforced**, not a file on a
+laptop.
+
+Checked against the zero-budget constraint before committing to it: Always Free covers **5 GB of
+*regional* standard storage** in `us-central1`; this project's state is **32 KB**. Multi-region `US`
+is **not** free-tier eligible — the bucket must stay regional or it starts costing money. Versioning
+is on because a corrupted state is only recoverable if the previous version survived.
+
+Local state was rejected: for a solo operator, locking is theatre, but **recoverability is not**.
+Lose the file and Terraform forgets the infra exists, and the next apply collides with "already
+exists" on every resource.
+
+### Decision 3 — Neon is a manual prerequisite, not a Terraform resource
+
+Neon is not a GCP resource. A community provider exists, but it needs a **Neon API key** — a *new*
+secret class to protect — pins a third-party provider into a portfolio repo, and the database password
+would land in state anyway, so it does not even buy secret hygiene. Neon therefore stays a
+**documented manual prerequisite** (free tier, made once in a web UI) whose URL is fed in as a
+`sensitive` variable via `TF_VAR_`, and Terraform manages the GCP-side handling of it: the secret, its
+version, and who may read it.
+
+**Honest cost, stated rather than hidden:** `terraform apply` in a fresh project does **not** yield a
+working system end to end. You must create the Neon project first.
+
+### Decision 4 — a dedicated least-privilege identity per deployable unit
+
+**This was not on the plan. Writing the IAM down is what produced it.**
+
+The imperative script ran both units as the project's **default compute service account** — by
+omission; it never passed `--service-account`. That account holds **`roles/editor`** on the project (a
+Google default, not something this repo granted). So the script's two carefully-scoped bindings —
+`secretAccessor` on one secret, `run.invoker` on one job — were **decorative**. An account with Editor
+can already read every secret and start every job in the project.
+
+Now: two service accounts, `forge-pdm-api` and `forge-pdm-worker`, one per unit, each with only what
+it needs. The API may start **that job alone**; the worker may not start jobs at all (it *is* the job).
+Neither needs Artifact Registry read — Cloud Run pulls images with its own service agent, a permission
+it is tempting to grant "just in case".
+
+**Honest boundary:** the default compute SA still holds Editor. Removing that is out of scope (Cloud
+Build leans on it). What changed is that **our runtime no longer runs as it**.
+
+### The finding that matters most — the permission model was **wrong**, and an over-privileged account was hiding it
+
+Moving to an account that had *only what was written down* immediately broke generation:
+
+```
+HTTP 403  Permission 'run.jobs.runWithOverrides' denied on resource
+          'projects/forge-pdm-mlops/locations/us-central1/jobs/forge-pdm-generate'
+```
+
+`roles/run.invoker` — the role the script granted, the role that "worked" for months — carries
+`run.jobs.run` but **not** `run.jobs.runWithOverrides`. And `jobs.py` starts the execution *with
+per-request env overrides*: the fleet size, window and seed are passed as overrides. **That is the
+entire mechanism.** The correct role is the purpose-built `roles/run.jobsExecutorWithOverrides` (three
+permissions), not `roles/run.developer` (eighty-eight).
+
+**So why did generation ever work?** Because the runtime was the Editor-holding default SA, and Editor
+contains `runWithOverrides`. The narrow binding was not merely decorative — **it was insufficient**.
+The system had been running on an over-privileged accident, and nothing could reveal that while an
+account with Editor was quietly covering for it.
+
+**The generalizable lesson: an IAM binding you never test against a least-privilege identity is a
+binding you have not verified — you have only *written*.** The permissions were wrong in the script,
+wrong in the docs, and wrong in my first HCL. What found it was forcing the permission model to be
+*true* and then exercising the app.
+
+### ⚠ Terraform does not know whether your application works
+
+It knows the resources exist and match the config. It printed `Apply complete!` **twice** over a
+broken system in this very phase:
+
+1. Over the 403 above — the resources were exactly as configured; the configuration was wrong.
+2. Over a Cloud Run job left in `Ready=False / SecretsAccessCheckFailed` by an earlier failed apply.
+   The spec was correct by then, and the IAM was correct, so Terraform saw **no diff and did nothing**
+   — the failed condition is *health*, and health is not in the spec. Repairing it needed an explicit
+   `-replace`. **Terraform reconciles configuration, not health.**
+
+Both were caught by an **end-to-end request**, never by `plan`. `plan` is not a test. Do not claim IaC
+validates the app.
+
+### Two Terraform lessons worth keeping
+
+- **Implicit dependencies come from *references*, and an IAM binding that nothing references is
+  invisible to the graph.** The first apply deployed the job under its new identity *before* granting
+  that identity access to the secret, and Cloud Run — which validates secret access at deploy time —
+  rejected the revision. `plan` cannot show you this: it renders the resources, not the order. It
+  needs an explicit `depends_on`.
+- **`:latest` is a mutable tag and it silently breaks a declarative deploy.** Push new bytes behind
+  the same tag and Terraform compares `latest` to `latest`, sees no change, and rolls no revision —
+  your code is built, pushed, and not serving. (The imperative script hid this by always calling
+  `gcloud run deploy`, which creates a revision unconditionally.) Images are now tagged with the git
+  SHA, so the image URI is a real input and a deploy shows up in the diff like everything else.
+
+### What F17 changed in the repo
+
+`scripts/deploy_cloudrun_neon.sh` **no longer creates infrastructure.** It does the one thing
+Terraform does not — build the two images — and then calls `terraform apply`. Leaving it able to
+create resources would have shipped **two sources of truth**, which is the exact defect F17 exists to
+remove. `scripts/deploy_cloudrun.sh` (the paid Cloud SQL variant) is marked **superseded, do not
+run**: it would stand up a parallel stack that the state file knows nothing about.
+
+Tear-down is deliberately a **two-step** — `deletion_protection` defaults to on, so `terraform
+destroy` refuses until the guard is removed and that removal is applied. The DoD asks for tear-down to
+be *documented*, not to be one trigger away from the live demo.
+
+### A carried-over to-do, investigated and **killed** rather than done
+
+F14a left: *"the generation Job cold-starts in ~1–2 min → candidate for the `--cpu-boost` treatment
+the API already got."* **It is not.** `startup_cpu_boost` is not valid on a Cloud Run *Job*, and
+`gcloud run jobs` has no `--cpu-boost` flag. It is a **service-only** knob, and for a good reason:
+boost exists to fix a pathology only services have — CPU throttled to near-zero *outside* request
+handling, which makes startup crawl. A job is not request-driven; its task has full CPU for the whole
+execution already. There is no throttled state to boost out of.
+
+So the ~1–2 min is **not a CPU problem and no infra flag will fix it.** The cause is dependency
+weight: `mlflow`, `lightgbm` and `scikit-learn` are **base** dependencies in `pyproject.toml`, so the
+worker pulls and imports the entire training stack — *none of which it uses*, because ADR-026
+deliberately had it not score. This also means the "two dependency surfaces" claim is weaker than
+written: the split is real at the *extras* level, but both images sit on a base carrying the training
+stack. **The real fix is a lighter worker image** (move the training stack into its own extra), which
+touches every image and belongs to its own phase, not smuggled into an IaC one.

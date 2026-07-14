@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# ⚠ SUPERSEDED — DO NOT RUN (F17 / ADR-027).
+#
+# This is the ORIGINAL imperative deploy, kept only as the record of the paid Cloud SQL
+# alternative to Neon (see ADR-016 for why the managed resource became Neon: Cloud SQL has
+# no free tier, ~$8-10/mo).
+#
+# It is superseded because it *creates infrastructure imperatively*, which is exactly the
+# defect F17 removed. Running it now would stand up a second, parallel Cloud Run + Cloud SQL
+# stack that the Terraform state knows nothing about — untracked, undiffable, and billed.
+#
+# The live deploy is: terraform/ (infrastructure) + scripts/deploy_cloudrun_neon.sh (images).
+# It also predates F14a, so it does not know about the generation worker at all.
+#
+# ---------------------------------------------------------------------------------------
 # Deploy the serving image to Google Cloud Run + Cloud SQL (F7 — managed cloud).
 #
 # This is the gate-closer: the SAME self-contained image the HF Space runs (Dockerfile.hf,

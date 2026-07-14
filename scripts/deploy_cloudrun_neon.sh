@@ -1,142 +1,136 @@
 #!/usr/bin/env bash
-# Deploy the serving image to Google Cloud Run with **Neon** serverless Postgres as the
-# managed resource (F7 — managed cloud, $0 free-tier variant of deploy_cloudrun.sh).
+# Deploy to Cloud Run + Neon.
 #
-# Same gate, zero code change: Cloud Run is the *managed runtime* (free tier, scale to
-# zero) and Neon (neon.tech) is the *managed resource* — a serverless Postgres with a real
-# free tier, reached over the public internet with TLS instead of the Cloud SQL unix
-# socket. store_pg.open_log(url) takes ANY SQLAlchemy URL, so the only difference from the
-# Cloud SQL script is *which URL* lands in Secret Manager — no application change.
+# ⚠ THIS SCRIPT NO LONGER CREATES INFRASTRUCTURE (F17 / ADR-027).
 #
-# Why this variant exists: Cloud SQL has no free tier (~$8-10/mo while it exists). Neon's
-# free tier closes the "managed cloud resource in production" gate at $0.
+# It used to. It was a sequence of `gcloud` commands that created an Artifact Registry repo,
+# a Cloud Run service, a Cloud Run job, a Secret Manager secret and two IAM bindings — which
+# meant the only description of the infrastructure was *the transcript of a program someone
+# ran once*. Nothing could be diffed, reviewed, recreated in another project, or destroyed
+# cleanly. That is the defect F17 exists to fix.
 #
-# Prereqs (one-time, interactive — do these on the machine with your gcloud auth):
-#   1. A Neon project + database → copy its connection string (see docs/DEPLOY.md).
+# The infrastructure is now defined in `terraform/`, and that is the single source of truth.
+# This script does the ONE thing Terraform does not do:
+#
+#     Terraform does not build container images.
+#
+# So the division of labour is:
+#     this script  →  build + push the two images (Cloud Build), then call `terraform apply`
+#     terraform/   →  everything else: registry, service, job, secret, IAM, service accounts
+#
+# If you add a resource, add it to the Terraform — NOT here. A `gcloud ... create` in this
+# file is a bug: it recreates the exact defect above, and Terraform will either fight it or,
+# worse, quietly not know about it.
+#
+# ---------------------------------------------------------------------------------------
+# Prereqs (one-time, interactive):
+#   1. A Neon project + database → its connection string (docs/DEPLOY.md).
 #   2. gcloud auth login
-#   3. gcloud config set project "$PROJECT_ID"
-#   4. gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-#          secretmanager.googleapis.com cloudbuild.googleapis.com
-#      (No sqladmin.googleapis.com — there is no Cloud SQL in this variant.)
+#   3. gcloud auth application-default login    ← Terraform needs ADC; `gcloud auth login`
+#                                                  alone is NOT enough.
+#   4. The Terraform state bucket (it cannot create itself — see docs/DEPLOY.md).
 #
 # Usage (from the repo root):
-#   PROJECT_ID=my-proj REGION=us-central1 \
-#   NEON_DATABASE_URL='postgresql://user:pass@ep-xxx-pooler.us-east-2.aws.neon.tech/dbname?sslmode=require' \
+#   PROJECT_ID=forge-pdm-mlops \
+#   TF_VAR_neon_database_url='postgresql+psycopg://user:pass@ep-xxx.neon.tech/db?sslmode=require' \
 #   bash scripts/deploy_cloudrun_neon.sh
 #
-# The Neon URL is read from the environment (never committed) and rewritten to the
-# psycopg3 dialect + stored in Secret Manager. Re-running rolls a new revision and adds a
-# fresh secret version.
 set -euo pipefail
 
-# --- config (override via env) ------------------------------------------------
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID to your GCP project}"
-NEON_DATABASE_URL="${NEON_DATABASE_URL:?set NEON_DATABASE_URL to your Neon connection string}"
 REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-forge-pdm-mlops}"
-REPO="${REPO:-forge-pdm}"                        # Artifact Registry repo
-SECRET_NAME="${SECRET_NAME:-forge-pdm-db-url}"   # Secret Manager: the DATABASE_URL
-JOB="${JOB:-forge-pdm-generate}"                 # Cloud Run Job: the generation worker (F14a)
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:latest"
-WORKER_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${JOB}:latest"
+REPO="${REPO:-forge-pdm}"
+JOB="${JOB:-forge-pdm-generate}"
 
-echo "[deploy] project=${PROJECT_ID} region=${REGION} service=${SERVICE} job=${JOB} (Neon backend)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TF_DIR="${REPO_ROOT}/terraform"
 
-# --- 0. Normalise the Neon URL to the psycopg3 SQLAlchemy dialect -------------
-# Neon hands out `postgresql://…`; SQLAlchemy would pick psycopg2 for that scheme, but the
-# [cloud] extra installs psycopg (v3), whose dialect is `postgresql+psycopg://`. Rewrite
-# only the scheme; keep the ?sslmode=require query (psycopg3 honours it). Idempotent.
-DATABASE_URL="${NEON_DATABASE_URL/#postgresql:\/\//postgresql+psycopg://}"
-DATABASE_URL="${DATABASE_URL/#postgres:\/\//postgresql+psycopg://}"
-case "${DATABASE_URL}" in
-  *sslmode=*) : ;;                                  # already has an sslmode
-  *\?*)       DATABASE_URL="${DATABASE_URL}&sslmode=require" ;;
-  *)          DATABASE_URL="${DATABASE_URL}?sslmode=require" ;;
-esac
+# The Neon URL is Terraform's input, not ours. Fail early and loudly rather than letting
+# `terraform apply` prompt for it halfway through a deploy.
+: "${TF_VAR_neon_database_url:?set TF_VAR_neon_database_url (psycopg3 dialect; never commit it)}"
 
-# --- 1. Artifact Registry repo (create if missing) ----------------------------
-if ! gcloud artifacts repositories describe "${REPO}" --location "${REGION}" >/dev/null 2>&1; then
-  echo "[deploy] creating Artifact Registry repo ${REPO}…"
-  gcloud artifacts repositories create "${REPO}" \
-    --repository-format=docker --location "${REGION}" \
-    --description "forge-pdm-mlops serving images"
+# --- The image tag is the git SHA, not `latest` -----------------------------------------
+#
+# `:latest` is a MUTABLE tag, and that is a real problem for a declarative deploy: push new
+# bytes behind the same tag and Terraform compares "latest" to "latest", sees no change, and
+# rolls no new revision. Your code is built, pushed... and not serving. (The old imperative
+# script hid this by always calling `gcloud run deploy`, which unconditionally creates a
+# revision whether or not anything changed.)
+#
+# An immutable tag makes the image a real input: the URI changes → Terraform plans a new
+# revision → the deploy is visible in the diff, like everything else.
+GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+if ! git -C "${REPO_ROOT}" diff --quiet HEAD 2>/dev/null; then
+  GIT_SHA="${GIT_SHA}-dirty"
+  echo "[deploy] ⚠ working tree is dirty — tagging images ${GIT_SHA}"
+  echo "[deploy]   (a '-dirty' image is not reproducible from a commit; fine for iterating,"
+  echo "[deploy]    not fine for anything you intend to point at from the README)"
 fi
 
-# --- 2. Build & push the images (Cloud Build — no local Docker daemon needed) ---
-# TWO images, because this is a web+worker system (F14a / ADR-026 decision S2), not one
-# container with a background thread:
-#   - the SERVICE image (Dockerfile.hf): FastAPI + the demo registry baked at startup.
-#   - the WORKER image (Dockerfile.worker): the generator + the store. No web server.
-echo "[deploy] building ${IMAGE} via Cloud Build (Dockerfile.hf)…"
-gcloud builds submit --substitutions "_IMAGE=${IMAGE}" --config /dev/stdin <<'YAML'
+REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}"
+API_IMAGE="${REGISTRY}/${SERVICE}:${GIT_SHA}"
+WORKER_IMAGE="${REGISTRY}/${JOB}:${GIT_SHA}"
+
+echo "[deploy] project=${PROJECT_ID} region=${REGION} tag=${GIT_SHA}"
+
+# --- 1. Build both images (Cloud Build — no local Docker daemon needed) -------------------
+#
+# TWO images, because this is a web+worker system (ADR-026 / decision S2), not one container
+# with a background thread. Two Dockerfiles, two dependency surfaces, two lifecycles.
+#
+# NOTE: the Artifact Registry repo must exist before pushing. On a FIRST deploy into a fresh
+# project, run `terraform apply` once (it creates the registry) before this build — see
+# docs/DEPLOY.md. Chicken-and-egg, stated rather than papered over.
+
+echo "[deploy] building API image (Dockerfile.hf) → ${API_IMAGE}"
+gcloud builds submit "${REPO_ROOT}" --project "${PROJECT_ID}" \
+  --substitutions "_IMAGE=${API_IMAGE}" --config /dev/stdin <<'YAML'
 steps:
   - name: gcr.io/cloud-builders/docker
     args: ["build", "-f", "Dockerfile.hf", "-t", "${_IMAGE}", "."]
 images: ["${_IMAGE}"]
 YAML
 
-echo "[deploy] building ${WORKER_IMAGE} via Cloud Build (Dockerfile.worker)…"
-gcloud builds submit --substitutions "_IMAGE=${WORKER_IMAGE}" --config /dev/stdin <<'YAML'
+echo "[deploy] building worker image (Dockerfile.worker) → ${WORKER_IMAGE}"
+gcloud builds submit "${REPO_ROOT}" --project "${PROJECT_ID}" \
+  --substitutions "_IMAGE=${WORKER_IMAGE}" --config /dev/stdin <<'YAML'
 steps:
   - name: gcr.io/cloud-builders/docker
     args: ["build", "-f", "Dockerfile.worker", "-t", "${_IMAGE}", "."]
 images: ["${_IMAGE}"]
 YAML
 
-# --- 3. DATABASE_URL → Secret Manager -----------------------------------------
-if ! gcloud secrets describe "${SECRET_NAME}" >/dev/null 2>&1; then
-  gcloud secrets create "${SECRET_NAME}" --replication-policy=automatic
+# --- 2. Apply the infrastructure ----------------------------------------------------------
+# Everything else lives in terraform/. The images are inputs to it.
+
+echo "[deploy] terraform apply…"
+terraform -chdir="${TF_DIR}" init -input=false
+terraform -chdir="${TF_DIR}" apply -input=false \
+  -var "project_id=${PROJECT_ID}" \
+  -var "region=${REGION}" \
+  -var "api_image=${API_IMAGE}" \
+  -var "worker_image=${WORKER_IMAGE}"
+
+URL="$(terraform -chdir="${TF_DIR}" output -raw service_url)"
+
+# --- 3. Verify — because Terraform does not know whether the app works ---------------------
+#
+# `Apply complete! 0 errors` says the RESOURCES match the config. It says nothing about the
+# application. Terraform will report success over a Cloud Run service that 500s on every
+# request — and during F17 it did exactly that, twice (once on a permission the config had
+# wrong, once on a job left in a failed Ready state). The smoke test below is not ceremony.
+
+echo "[deploy] verifying /health (cold start + demo bake — allow ~1-2 min)…"
+if curl -fsS --max-time 180 --retry 5 --retry-delay 15 --retry-all-errors "${URL}/health"; then
+  echo
+  echo "[deploy] done."
+  echo "[deploy] demo:   ${URL}/demo"
+  echo "[deploy] worker: gcloud run jobs executions list --job ${JOB} --region ${REGION}"
+else
+  echo
+  echo "[deploy] ✗ /health did not come up. The infrastructure applied cleanly and the APP is broken —"
+  echo "[deploy]   which is precisely the distinction Terraform cannot make for you."
+  echo "[deploy]   Logs: gcloud run services logs read ${SERVICE} --region ${REGION} --limit 50"
+  exit 1
 fi
-printf '%s' "${DATABASE_URL}" | gcloud secrets versions add "${SECRET_NAME}" --data-file=-
-
-# Cloud Run's runtime service account needs to read the secret.
-PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-gcloud secrets add-iam-policy-binding "${SECRET_NAME}" \
-  --member "serviceAccount:${RUNTIME_SA}" \
-  --role roles/secretmanager.secretAccessor >/dev/null
-
-# --- 4. The generation worker: a Cloud Run JOB (F14a / ADR-026 — decision S2) --
-# A Job, not a background task in the API: a genuinely separate deployable unit, with its
-# own image, its own lifecycle and its own scaling. It is free-tier eligible and scales to
-# zero — it exists only while a generation is running. The API starts an execution of it
-# with per-request env overrides (see jobs.CloudRunJobTrigger).
-echo "[deploy] deploying Cloud Run job ${JOB}…"
-JOB_ACTION="create"
-gcloud run jobs describe "${JOB}" --region "${REGION}" >/dev/null 2>&1 && JOB_ACTION="update"
-gcloud run jobs "${JOB_ACTION}" "${JOB}" \
-  --image "${WORKER_IMAGE}" \
-  --region "${REGION}" \
-  --set-secrets "DATABASE_URL=${SECRET_NAME}:latest" \
-  --cpu 1 --memory 1Gi --task-timeout 600 --max-retries 1
-
-# --- 5. Deploy the Cloud Run service ------------------------------------------
-# No --add-cloudsql-instances: Neon is reached over the public internet (egress is free).
-# DATABASE_URL is injected from the secret; Cloud Run injects $PORT (entrypoint honours it).
-# Public (unauthenticated) so the demo link is clickable; it only serves a demo model.
-# GENERATION_* tell the API which job to start — without them it honestly reports that
-# fleet generation is unavailable rather than quietly generating in-process.
-echo "[deploy] deploying Cloud Run service ${SERVICE}…"
-gcloud run deploy "${SERVICE}" \
-  --image "${IMAGE}" \
-  --region "${REGION}" \
-  --platform managed \
-  --allow-unauthenticated \
-  --set-secrets "DATABASE_URL=${SECRET_NAME}:latest" \
-  --set-env-vars "GENERATION_JOB=${JOB},GENERATION_PROJECT=${PROJECT_ID},GENERATION_REGION=${REGION}" \
-  --cpu 1 --memory 1Gi --timeout 300 --min-instances 0
-
-# --- 6. Let the API start the job (and only that) ------------------------------
-# `run.invoker` on the JOB alone — the service account may start this one job, nothing
-# else. The API never needs to read or write the job's definition.
-gcloud run jobs add-iam-policy-binding "${JOB}" \
-  --region "${REGION}" \
-  --member "serviceAccount:${RUNTIME_SA}" \
-  --role roles/run.invoker >/dev/null
-
-URL="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)')"
-echo "[deploy] done."
-echo "[deploy] live:      ${URL}/health"
-echo "[deploy] demo page: ${URL}/demo"
-echo "[deploy] verify:    curl -s ${URL}/health   # (first hit cold-starts + bakes the demo — allow ~1-2 min)"
-echo "[deploy] worker:    gcloud run jobs executions list --job ${JOB} --region ${REGION}"

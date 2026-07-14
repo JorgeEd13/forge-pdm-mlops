@@ -30,3 +30,17 @@ data/
 # Drift reports / serving artifacts produced at run time
 reports/
 *.html
+
+# Terraform (F17 / ADR-027)
+# State is NOT source — it is Terraform's belief about what exists, and it is
+# secrets-adjacent (the Neon URL lands in it in plaintext). It lives in a private,
+# versioned GCS bucket; a copy must never reach git. Same for *.tfvars, which is how a
+# connection string gets committed by accident — pass it via TF_VAR_ instead.
+# .terraform.lock.hcl IS committed on purpose: it pins provider hashes.
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log

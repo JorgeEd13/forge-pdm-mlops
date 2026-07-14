@@ -35,3 +35,35 @@ jobs:
 
       - name: Run tests (offline)
         run: python -m pytest -q
+
+  # The Terraform equivalent of the offline test suite (F17 / ADR-027): does the config
+  # parse, typecheck and reference only things that exist?
+  #
+  # ⚠ It does NOT touch the cloud, and it is NOT `plan`. `validate` needs no credentials
+  # and no state, which is exactly why it can run in CI — and exactly what limits it: it
+  # cannot tell you the config disagrees with the live infrastructure, let alone that the
+  # application works. `plan` (which needs credentials) checks the first; only an
+  # end-to-end request checks the second. In F17 both a wrong IAM role and a job stuck in
+  # a failed state applied cleanly and reported success.
+  terraform:
+    name: terraform (fmt + validate)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.13.1"
+
+      # Canonical formatting — fails on an unformatted file rather than reformatting it.
+      - name: terraform fmt -check
+        run: terraform -chdir=terraform fmt -check -recursive
+
+      # -backend=false: no GCS backend, no credentials, no state. Syntax + provider schema
+      # only, which is all CI can honestly check.
+      - name: terraform init (no backend)
+        run: terraform -chdir=terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform -chdir=terraform validate

@@ -179,28 +179,118 @@ unaffected (so HF Spaces and a local `pdm serve` are untouched).
 > pdm serve                                     # → /demo now offers "Generate your own fleet"
 > ```
 
-### Reference deploy — Cloud Run + Neon (free)
+### Reference deploy — Cloud Run + Neon (free), defined in Terraform (F17)
 
-**One-time setup:**
+**The infrastructure is `terraform/`. That is the source of truth.** The deploy script no
+longer creates anything — it builds the two images (Terraform does not build images) and then
+calls `terraform apply`. A `gcloud … create` anywhere outside Terraform is a bug: it produces
+resources the state file does not know about.
 
-1. Create a **Neon** project (neon.tech) and copy its connection string, e.g.
-   `postgresql://user:pass@ep-xxx-pooler.<region>.aws.neon.tech/neondb?sslmode=require`.
-2. Authenticate + enable the APIs (no `sqladmin` — there is no Cloud SQL here):
+Five managed resources plus their identities: **Artifact Registry** · the **Cloud Run service**
+(API) · the **Cloud Run job** (the F14a generation worker) · **Secret Manager** (the Neon URL) ·
+**IAM** — and two dedicated least-privilege service accounts, one per deployable unit.
+
+#### What Terraform does NOT manage, and why
+
+- **Neon.** It is not a GCP resource. It stays a **documented manual prerequisite**: create a
+  free Neon project, take the connection string, hand it in as a variable. A community provider
+  exists but wants a Neon API key — a *new* secret class to protect — and the DB password would
+  land in state either way, so it buys no hygiene. (ADR-027.)
+- **Container images.** Cloud Build builds them; Terraform consumes their URIs as inputs.
+
+#### One-time setup
+
+1. Create a **Neon** project (neon.tech) → copy the connection string.
+2. Authenticate. **Both** of these — `gcloud auth login` alone does not give Terraform
+   credentials; it needs Application Default Credentials:
 
 ```bash
 gcloud auth login
+gcloud auth application-default login      # ← Terraform reads ADC, not the gcloud login
 gcloud config set project "$PROJECT_ID"
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-    secretmanager.googleapis.com cloudbuild.googleapis.com
 ```
 
-**Deploy** (the Neon URL is read from the environment, rewritten to the `postgresql+psycopg://`
-dialect, and stored in Secret Manager):
+3. **Bootstrap the state bucket.** It cannot create itself — the config that would create it is
+   the config that needs somewhere to keep its state. One command, once, on purpose:
 
 ```bash
-PROJECT_ID=my-proj REGION=us-central1 \
-NEON_DATABASE_URL='postgresql://user:pass@ep-xxx-pooler.<region>.aws.neon.tech/neondb?sslmode=require' \
+gcloud storage buckets create "gs://${PROJECT_ID}-tfstate" \
+  --location=us-central1 \
+  --default-storage-class=STANDARD \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+gcloud storage buckets update "gs://${PROJECT_ID}-tfstate" --versioning
+```
+
+   **Keep it regional.** GCP's Always Free tier covers 5 GB of *regional* standard storage in
+   `us-central1`/`us-east1`/`us-west1`; multi-region `US` is **not** free-tier eligible. This
+   project's state is ~32 KB against that 5 GB, so the backend genuinely costs $0 — but only in
+   the regional configuration above.
+
+   Versioning is not decoration: state is Terraform's *belief* about what exists, and a
+   truncated or corrupted write is recoverable only if the previous version survives.
+
+#### The state file
+
+**It never goes in git** (`.gitignore` enforces it), and it is **secrets-adjacent**: the Neon
+connection string is written into it *in plaintext*. `sensitive = true` redacts a value from CLI
+output; it does **not** encrypt it in state. That is a property of Terraform, not a defect here —
+and it is the whole reason the backend is a private, public-access-prevented bucket rather than a
+file next to the code.
+
+#### Deploy
+
+```bash
+PROJECT_ID=forge-pdm-mlops \
+TF_VAR_neon_database_url='postgresql+psycopg://user:pass@ep-xxx.<region>.aws.neon.tech/neondb?sslmode=require' \
 bash scripts/deploy_cloudrun_neon.sh
+```
+
+Note the `postgresql+psycopg://` dialect — Neon hands out `postgresql://`, but the `[cloud]`
+extra installs psycopg **3**. Pass the secret via `TF_VAR_` (the environment), never a
+`terraform.tfvars` file: `*.tfvars` is gitignored precisely because it is how a live connection
+string gets committed by accident.
+
+On a **first** deploy into a fresh project, run `terraform -chdir=terraform apply` once before
+the script — the Artifact Registry repo must exist before an image can be pushed to it.
+Chicken-and-egg, stated rather than papered over.
+
+#### Review a change before it happens
+
+This is what the imperative script could never give you:
+
+```bash
+cd terraform
+terraform plan          # exactly what will change, before anything changes
+```
+
+#### Tear-down
+
+Deliberately a **two-step**. `deletion_protection` defaults to **on**, so `terraform destroy`
+refuses out of the box — the Cloud Run service is the live demo linked from the README, and it
+should not be one mistyped command from deletion. Removing the guard is its own reviewable act:
+
+```bash
+cd terraform
+terraform apply   -var deletion_protection=false     # 1. remove the guard (and commit it to state)
+terraform destroy -var deletion_protection=false     # 2. now it will go
+```
+
+Then delete the Neon project by hand (Terraform never owned it) and, if you want the last trace
+gone, the state bucket.
+
+#### ⚠ Terraform does not know whether your application works
+
+It knows the **resources exist and match the config**. It will print `Apply complete! 0 errors`
+over a Cloud Run service that 500s on every request — and during F17 it did exactly that, twice:
+once over a job whose IAM role was missing a permission the config had wrong, and once over a job
+sitting in a failed `Ready` state that the spec did not capture. Both were caught by an
+end-to-end request, not by Terraform. **`plan` is not a test.** Verify the app separately:
+
+```bash
+curl -s "$URL/health"                                  # the app answers
+curl -s -X POST "$URL/demo/generate" -H 'Content-Type: application/json' \
+     -d '{"n_units":8,"days":7,"seed":42}'             # the web→worker→Neon chain works
 ```
 
 When it finishes it prints the service URL; verify the runtime **and** the managed resource:

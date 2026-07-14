@@ -1,6 +1,6 @@
 # State — forge-pdm-mlops
 
-Updated: 2026-07-14 (session: **F14a SHIPPED** — the web/worker split is real; F17 is next.)
+Updated: 2026-07-14 (session: **F17 SHIPPED** — the infra is Terraform; the IaC gate is CLOSED. F16 is next.)
 
 ## Current focus
 
@@ -9,8 +9,79 @@ Updated: 2026-07-14 (session: **F14a SHIPPED** — the web/worker split is real;
 (why the sequence contender re-opens despite F2.7; committee-of-specialists; independent multi-mode
 labels + the leakage subtlety; per-vehicle/region features = the report; optional enrichment;
 GPU-train/CPU-serve; the $0 envelope; honesty boundaries; and **S1/S2**, the sequencing).
-Execution order: **~~F14a~~ → F17 → F16 → F10 → F11 → F12 → F13 → F14b → F15**, one phase/session.
+Execution order: **~~F14a~~ → ~~F17~~ → F16 → F10 → F11 → F12 → F13 → F14b → F15**, one phase/session.
 Compute is **notebook-only** (career memory `resources_compute`).
+
+**Session 2026-07-14 — F17 (IaC / Terraform) is DONE (ADR-027). The IaC gate is CLOSED.** The managed
+deploy is now **defined in `terraform/`**, not performed by a script. `terraform plan` against the
+live deploy is **clean** ("No changes. Your infrastructure matches the configuration"), which is the
+DoD: proof the config describes reality rather than merely looking plausible.
+
+- **Adopted the live infra with config-driven `import` blocks, not a recreate.** 12 resources
+  imported, 0 destroyed. Recreating would have deleted the Artifact Registry (taking both images with
+  it) and dropped the live demo to prove a point. The drift found while converging is **explained,
+  not hidden**: `client="gcloud" → null` on both Cloud Run units (literally the imperative→declarative
+  handover stamped into the resource) and an Artifact Registry description that still said "serving
+  images", untrue since F14a added the worker image.
+- **State: a private, versioned, REGIONAL GCS bucket** (`forge-pdm-mlops-tfstate`, 32 KB). Checked
+  against zero-budget *before* committing: Always Free covers 5 GB of **regional** us-central1
+  standard storage — **multi-region `US` is NOT free-tier eligible**. The state file is **not source**
+  (it is Terraform's *belief* about what exists), never goes in git, and is **secrets-adjacent**: the
+  Neon URL lands in it **in plaintext**, because `sensitive = true` redacts CLI output and does *not*
+  encrypt state. That is why the backend is a bucket with public-access-prevention enforced.
+- **Neon is NOT managed by Terraform** — it is not a GCP resource. It stays a documented manual
+  prerequisite whose URL is fed in as a `sensitive` var via `TF_VAR_`. The community provider wants a
+  Neon API key (a *new* secret class) and the password would land in state anyway, so it buys no
+  hygiene. Honest cost: `apply` in a fresh project does **not** give a working system until Neon exists.
+- **⚠ THE FINDING — codifying the IAM proved the permission model was WRONG, and an over-privileged
+  account had been hiding it.** The script ran both units as the **default compute SA**, which holds
+  **`roles/editor`** — so its two "least privilege" bindings were **decorative**. F17 gave each unit a
+  dedicated SA (`forge-pdm-api`, `forge-pdm-worker`)... and generation **immediately 403'd**:
+  `Permission 'run.jobs.runWithOverrides' denied`. **`roles/run.invoker` — the role the script granted,
+  the role that "worked" for months — does not contain `runWithOverrides`**, and `jobs.py` starts the
+  job *with per-request env overrides* (that IS the mechanism). It only ever worked because Editor
+  contains the permission. The binding wasn't just decorative — **it was insufficient.** Correct role:
+  `roles/run.jobsExecutorWithOverrides` (3 permissions), not `run.developer` (88). **Lesson: an IAM
+  binding never tested against a least-privilege identity is a binding you have written, not verified.**
+- **⚠ TERRAFORM DOES NOT KNOW WHETHER YOUR APP WORKS — it printed `Apply complete!` over a broken
+  system TWICE this phase.** (1) Over the 403 above: the resources matched the config exactly; the
+  config was wrong. (2) Over a job stuck in `Ready=False / SecretsAccessCheckFailed` from an earlier
+  failed apply — by then the spec *and* the IAM were correct, so **Terraform saw no diff and did
+  nothing**; a failed condition is *health*, and health is not in the spec. Needed an explicit
+  `-replace`. **Terraform reconciles configuration, not health.** Both were caught by an end-to-end
+  request. **`plan` is not a test.** Never claim IaC validates the app.
+- **Two Terraform lessons kept:** (a) **implicit dependencies come from *references*** — an IAM
+  binding nothing references is invisible to the graph, so the first apply deployed the job under an
+  identity that could not yet read its secret, and Cloud Run rejected the revision. `plan` cannot show
+  this (it renders resources, not order) → explicit `depends_on`. (b) **`:latest` is mutable and
+  silently breaks a declarative deploy** — same tag in, no diff, no new revision, code built and *not
+  serving*. Images are now tagged with the **git SHA**.
+- **`scripts/deploy_cloudrun_neon.sh` NO LONGER CREATES INFRASTRUCTURE.** It builds the two images
+  (the one thing Terraform doesn't do) and calls `terraform apply`. Leaving it able to create
+  resources would have shipped **two sources of truth** — the exact defect F17 removes. The old
+  `deploy_cloudrun.sh` (paid Cloud SQL) is marked **SUPERSEDED — do not run** (it would stand up a
+  parallel stack the state knows nothing about). Tear-down is a documented **two-step**
+  (`deletion_protection` defaults **on**).
+- **VERIFIED LIVE, end to end, under the new least-privilege identities (2026-07-14).** `/health` →
+  `model_loaded:true`; a real generation (8 vehicles × 7 days) → **202 `worker: cloudrun-job`** → the
+  Cloud Run Job ran → **16,128 rows written to Neon** (exactly `expected_rows`) → the per-vehicle
+  report rendered, **1 of 8 flagged** at risk ≥ 0.7, roll-up rule intact ("peak of a 1-hour rolling
+  mean… sustained risk, not a single spike"). Cold start held at **~2 min**, as documented.
+- **A carried-over to-do, INVESTIGATED AND KILLED rather than done.** F14a wanted `--cpu-boost` on the
+  generation Job. **It does not exist for Jobs** — `startup_cpu_boost` is a **service-only** knob, and
+  rightly so: boost fixes a pathology only services have (CPU throttled outside request handling). A
+  job is not request-driven and already has full CPU for its whole execution. **So the ~1–2 min is not
+  a CPU problem and no infra flag will fix it.** The real cause: **`mlflow` + `lightgbm` +
+  `scikit-learn` are BASE dependencies**, so the worker pulls and imports the whole training stack —
+  *which it never uses*, because ADR-026 deliberately had it not score. This also weakens the "two
+  dependency surfaces" claim: the split is real at the **extras** level, but both images sit on a base
+  carrying the training stack. **Real fix = a lighter worker image** (move the training stack to its
+  own extra) — touches every image, so it is its own piece of work.
+- **Next: F16 (Kubernetes on `kind`).** ⚠ Its justification is **the MARKET, not the project** — do
+  **not** defend it the way F17 was defended. F17 fixed a defect this repo genuinely had; F16 will
+  not, and must say so out loud (`EPOCH2_PLAN.md` §3, F16's ⚠ block).
+
+---
 
 **Session 2026-07-14 — F14a (generate-your-own-data: the topology) is DONE (ADR-026).** The system
 is now genuinely **two deployable units**, which is the thing F17 and F16 were blocked on — not the
@@ -117,15 +188,14 @@ page polls, then browses the data and shows **one risk score per vehicle**.
   package). What generalizes is a test, not a paragraph. **The crash-honest design did pay off
   though:** the worker died in another process, in the cloud, and the reason still landed on the run
   row where the poller could see it.
-- **Next concrete step: F17 (Terraform / IaC).** Its entry question is the **state backend** — local
-  gitignored state vs. a GCS free-tier bucket; the state file is secrets-adjacent (the Neon URL can
-  land in it in plaintext) and never goes in git. The resource list is no longer hypothetical:
-  `deploy_cloudrun_neon.sh` now creates **Artifact Registry · the API service · the generation Job ·
-  Secret Manager · two IAM bindings** (the API may `run.invoker` **that job alone**) — read the
-  script, don't re-derive it. F17's honest justification is unchanged: F7 shipped **imperative**, so
-  there is no source of truth to diff, recreate or destroy.
+- ~~**Next concrete step: F17 (Terraform / IaC).**~~ **DONE — see the F17 block above (ADR-027), which
+  owns this now.** For the record, F17's entry question (the state backend) resolved to a **private,
+  versioned, regional GCS bucket**, and the script's `run.invoker` binding — described here as "the
+  API may `run.invoker` **that job alone**" — turned out to be **the wrong role entirely**. It does
+  not contain `run.jobs.runWithOverrides`.
 - **ADR numbering:** forge-pdm D1–D7 still pre-assign **ADR-020–025** (unwritten — they land with
-  their phases); **ADR-026 is written** (F14a). can-telemetry-forge from **ADR-021**.
+  their phases); **ADR-026** (F14a) and **ADR-027** (F17) are written. can-telemetry-forge from
+  **ADR-021**.
 
 ---
 

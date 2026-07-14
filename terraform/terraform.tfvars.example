@@ -1,0 +1,27 @@
+# Example inputs. Copy to terraform.tfvars ONLY if you are not using TF_VAR_ env vars —
+# and note that *.tfvars is gitignored precisely because this is how a live connection
+# string gets committed by accident.
+#
+# The preferred way to pass the one secret is the environment, so it never touches disk:
+#
+#   export TF_VAR_neon_database_url='postgresql+psycopg://user:pass@ep-xxx-pooler.us-east-2.aws.neon.tech/dbname?sslmode=require'
+#   terraform plan
+#
+# Note the dialect: Neon hands out `postgresql://`, but the [cloud] extra installs psycopg
+# (v3), whose SQLAlchemy dialect is `postgresql+psycopg://`. The deploy script rewrites the
+# scheme for you; if you are running terraform by hand, rewrite it yourself.
+
+project_id = "forge-pdm-mlops"
+region     = "us-central1"
+
+# service_name = "forge-pdm-mlops"
+# job_name     = "forge-pdm-generate"
+# repo_name    = "forge-pdm"
+# secret_name  = "forge-pdm-db-url"
+
+# Images default to <region>-docker.pkg.dev/<project>/<repo>/<name>:latest, which is what
+# scripts/deploy_cloudrun_neon.sh builds and pushes. Override to pin a digest.
+# api_image    = "us-central1-docker.pkg.dev/forge-pdm-mlops/forge-pdm/forge-pdm-mlops:latest"
+# worker_image = "us-central1-docker.pkg.dev/forge-pdm-mlops/forge-pdm/forge-pdm-generate:latest"
+
+# neon_database_url = "…"   # ← do NOT put a real value here in a file you might commit
