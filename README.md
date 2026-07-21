@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://forge-pdm-mlops-958199756179.us-central1.run.app/demo"><img src="https://img.shields.io/badge/▶%20try%20it%20live-interactive%20demo-4285F4?logo=googlecloud&logoColor=white" alt="Try it live"></a>
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
-  <img src="https://img.shields.io/badge/tests-202%20offline-success" alt="202 offline tests">
+  <img src="https://img.shields.io/badge/tests-205%20offline-success" alt="205 offline tests">
   <img src="https://img.shields.io/badge/data-100%25%20synthetic-blueviolet" alt="100% synthetic data">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
@@ -34,7 +34,7 @@ Also live on Hugging Face Spaces: [`/health`](https://jorgeed-forge-pdm-mlops.hf
 
 ```bash
 pip install -e .[dev]
-pytest -q                 # 169 offline tests — no network, no generator needed
+pytest -q                 # offline — no network or generator needed (205 with the [serve,ops,cloud] extras)
 pdm --version
 ```
 
