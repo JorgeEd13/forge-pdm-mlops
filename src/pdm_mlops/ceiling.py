@@ -42,7 +42,8 @@ decidable from the two GBDT rungs; the TCN-included number is an optional refine
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from itertools import pairwise
 
 import numpy as np
 import pandas as pd
@@ -236,7 +237,7 @@ def decompose(base: BaseFrames, readings: pd.DataFrame, *, seed: int) -> Decompo
     mode_test = readings["failure_mode"].to_numpy()[test_idx].astype(str)
 
     by_horizon: list[Slice] = []
-    for lo, hi in zip(TTF_BUCKETS_H[:-1], TTF_BUCKETS_H[1:]):
+    for lo, hi in pairwise(TTF_BUCKETS_H):
         band_pos = (y_test == 1) & (ttf_test >= lo) & (ttf_test < hi)
         hi_lab = "inf" if hi == float("inf") else f"{hi:g}"
         by_horizon.append(_slice_auc(y_test, proba, band_pos | neg, f"[{lo:g},{hi_lab}) h"))
@@ -406,7 +407,7 @@ def stacking_probe(
     stack_proba = meta.predict_proba(Z_test)[:, 1]
     stack_auc = float(roc_auc_score(y_test, stack_proba))
 
-    best_base = max(base_test, key=base_test.get)
+    best_base = max(base_test, key=lambda name: base_test[name])
     best_auc = base_test[best_base]
     margin = stack_auc - best_auc
     return StackingProbe(
@@ -490,9 +491,9 @@ def format_report(report: CeilingReport) -> str:
     )
 
     lines.append("  stacking redundancy probe (OOF meta-learner over the rungs):")
-    for name, auc in sorted(sp.base_test.items(), key=lambda kv: kv[1], reverse=True):
-        star = "  <- best base" if name == sp.best_base else ""
-        lines.append(f"    {name:<20} {auc:.4f}{star}")
+    for base_name, base_auc in sorted(sp.base_test.items(), key=lambda kv: kv[1], reverse=True):
+        star = "  <- best base" if base_name == sp.best_base else ""
+        lines.append(f"    {base_name:<20} {base_auc:.4f}{star}")
     lines.append(f"    stack                {sp.stack_auc:.4f}  ({sp.margin:+.4f} vs. best base)")
     verdict = "beats" if sp.beats_best_base else "does NOT beat"
     lines.append(f"  → the stack {verdict} its best member.")

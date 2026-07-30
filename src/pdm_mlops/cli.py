@@ -20,6 +20,8 @@ the command stays honest about what is and isn't wired yet.
 
 from __future__ import annotations
 
+from typing import Any
+
 import argparse
 import sys
 
@@ -228,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
 
         readings = _data.load_readings()
         window = args.window or _seq.DEFAULT_WINDOW
-        tcn_kwargs: dict[str, object] = {"window": window}
+        tcn_kwargs: dict[str, Any] = {"window": window}
         if args.epochs is not None:
             tcn_kwargs["epochs"] = args.epochs
         if args.channels is not None:
@@ -250,10 +252,10 @@ def main(argv: list[str] | None = None) -> int:
         from . import sequence as _seq
 
         readings = _data.load_readings()
-        report = _ceiling.characterize(
+        ceiling_report = _ceiling.characterize(
             readings, seed=args.seed, window=args.window or _seq.DEFAULT_WINDOW
         )
-        print(_ceiling.format_report(report))
+        print(_ceiling.format_report(ceiling_report))
         return 0
     if args.command == "promote":
         from . import config as _config
@@ -262,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         client = _registry._client()
         name = _config.REGISTERED_MODEL_NAME
         version = args.version or _registry.latest_version(client, name)
-        result = _registry.promote(
+        promotion = _registry.promote(
             client,
             name,
             version,
@@ -271,8 +273,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.min_delta if args.min_delta is not None else _registry.DEFAULT_MIN_DELTA
             ),
         )
-        print(_registry.format_promotion(result))
-        return 0 if result.promoted else 1
+        print(_registry.format_promotion(promotion))
+        return 0 if promotion.promoted else 1
     if args.command == "rollback":
         from . import config as _config
         from . import registry as _registry
@@ -298,19 +300,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "flow":
         from . import flows as _flows
 
-        result = _flows.run_drift_retrain(
+        flow_result = _flows.run_drift_retrain(
             season=args.season, seed=args.seed, min_delta=args.min_delta
         )
-        print(result.summary())
+        print(flow_result.summary())
         # A stable-data cycle (no retrain) and a held candidate both exit non-zero, so a
         # scheduled runner can tell "a model was promoted" from "nothing changed".
-        return 0 if result.promoted else 1
+        return 0 if flow_result.promoted else 1
     if args.command == "monitor":
         from . import monitor as _monitor
 
-        report = _monitor.detect_drift(season=args.season)
-        print(report.summary())
-        return 0 if report.drifted else 1
+        drift_report = _monitor.detect_drift(season=args.season)
+        print(drift_report.summary())
+        return 0 if drift_report.drifted else 1
     if args.command == "generate-run":
         from . import generate as _generate
         from . import worker as _worker

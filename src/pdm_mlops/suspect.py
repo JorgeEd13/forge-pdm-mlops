@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from . import config, detect, features
+from . import detect, features
 
 #: The feature column the ladder contributes. It is a *signal-derived* suspicion score,
 #: not a label — so it is explicitly NOT in ``features.LEAKY_COLUMNS``.

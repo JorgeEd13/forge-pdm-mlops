@@ -42,19 +42,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import config, features
-from . import generate as _generate
-from . import jobs as _jobs
-from . import registry as _registry
-from . import store_gen, store_pg
-from . import upload as _upload
-
 # FastAPI/pydantic are the [serve] extra — imported at module load so the app object
 # exists for `pdm serve` and the tests, but kept out of the core dependency set.
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from . import config, features, store_gen, store_pg
+from . import generate as _generate
+from . import jobs as _jobs
+from . import registry as _registry
+from . import upload as _upload
 
 # --- request/response schemas -------------------------------------------------
 
@@ -179,7 +177,7 @@ class GeneratedRows(BaseModel):
     offset: int
     limit: int
     columns: list[str]
-    rows: list[dict[str, object]]
+    rows: list[dict[str, Any]]
 
 
 class UnitRiskOut(BaseModel):
@@ -402,7 +400,7 @@ def create_app(
     app.state.job_trigger = trigger
 
     @app.get("/")
-    def root() -> dict[str, object]:
+    def root() -> dict[str, Any]:
         """A friendly index so the bare URL isn't a 404 (e.g. the HF Space 'App' tab).
 
         Not part of the model contract — just points a human at the real endpoints and
@@ -428,7 +426,7 @@ def create_app(
         }
 
     @app.get("/health")
-    def health() -> dict[str, object]:
+    def health() -> dict[str, Any]:
         """Liveness + readiness. 200 even with no model, so 'up' ≠ 'ready'."""
         try:
             loaded = store.load()
@@ -509,7 +507,8 @@ def create_app(
         """
         version, proba = _score(request.readings)
         if log is not None:
-            for row, p in zip(request.readings, proba):
+            # strict=True: a short `proba` would silently skip logging rows.
+            for row, p in zip(request.readings, proba, strict=True):
                 log.log(model_version=version, failure_probability=p, readings=row)
         return DemoPredictResponse(
             model_version=version,
@@ -787,7 +786,7 @@ def config_version() -> str:
 # range so a domain-naive tester sets sane values on a slider instead of guessing
 # free-text. The keys stay the literal signal names (the API/scoring contract);
 # only the presentation is friendly. i18n localizes label+tooltip on top of this.
-_SIGNAL_META: dict[str, dict[str, object]] = {
+_SIGNAL_META: dict[str, dict[str, Any]] = {
     "engine_speed_rpm": {"unit": "rpm", "min": 600, "max": 2500, "step": 10},
     "coolant_temp_c": {"unit": "°C", "min": 60, "max": 160, "step": 1},
     "oil_pressure_kpa": {"unit": "kPa", "min": 0, "max": 550, "step": 5},
@@ -946,7 +945,7 @@ def _render_demo_page(
 # the `demo=fixture` banner and the ≈0.82 "reported result" framing are translated in
 # meaning, not softened; i18n localizes the interface, not the model/output semantics.
 # `sig`/`tip` are keyed by the literal signal name (which stays the API contract).
-_DEMO_I18N: dict[str, dict[str, object]] = {
+_DEMO_I18N: dict[str, dict[str, Any]] = {
     "en": {
         "langName": "EN",
         "toDark": "☾ Dark",

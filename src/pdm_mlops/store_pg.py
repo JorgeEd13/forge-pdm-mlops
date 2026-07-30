@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import features
@@ -102,7 +102,7 @@ class PredictionLog:
         only cost is a missing row in the recent-predictions panel.
         """
         row = {
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
             "model_version": str(model_version),
             "failure_probability": float(failure_probability),
             # Restrict to the known signal keys so a crafted request can't widen the row.
@@ -111,7 +111,7 @@ class PredictionLog:
         try:
             with self._engine.begin() as conn:
                 conn.execute(self._sa.insert(self._table).values(**row))
-        except Exception:  # noqa: BLE001 — logging is best-effort, see docstring
+        except Exception:
             return
 
     def recent(self, limit: int = 10) -> list[LoggedPrediction]:
@@ -124,7 +124,7 @@ class PredictionLog:
         try:
             with self._engine.connect() as conn:
                 rows = conn.execute(stmt).mappings().all()
-        except Exception:  # noqa: BLE001 — a read failure shows an empty panel, not a 500
+        except Exception:
             return []
         return [
             LoggedPrediction(
@@ -155,7 +155,7 @@ def open_log(url: str | None = None) -> PredictionLog | None:
         return None
     try:
         return PredictionLog(resolved)
-    except Exception:  # noqa: BLE001 — never let the log break app startup
+    except Exception:
         return None
 
 
@@ -163,8 +163,9 @@ def _clean_readings(readings: dict[str, float | None]) -> dict[str, float | None
     """Keep only the known signal keys, coerced to float/None (no PII, no surprises)."""
     cleaned: dict[str, float | None] = {}
     for key in features.FEATURE_COLUMNS:
-        if key in readings and readings[key] is not None:
-            cleaned[key] = float(readings[key])
+        value = readings.get(key)
+        if value is not None:
+            cleaned[key] = float(value)
         else:
             cleaned[key] = None
     return cleaned
@@ -180,5 +181,5 @@ def _as_dict(value: Any) -> dict[str, float | None]:
 def _as_utc(value: datetime) -> datetime:
     """Ensure a timezone-aware UTC datetime (SQLite loses the tz on the round-trip)."""
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

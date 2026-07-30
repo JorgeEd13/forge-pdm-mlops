@@ -83,7 +83,7 @@ def _alarm_set(scores: np.ndarray, budget: float) -> np.ndarray:
     flags 0.6 % of rows is credited with exactly those, not the whole dataset.
     """
     n = len(scores)
-    k = max(1, int(round(budget * n)))
+    k = max(1, round(budget * n))
     kth = np.partition(scores, n - k)[n - k]  # value at the budget boundary
     if (scores == kth).sum() > k - (scores > kth).sum():
         # ties overflow the budget at the boundary → only strictly-greater rows alarm

@@ -21,7 +21,7 @@ one place so the same seed → the same fitted model → the same metric.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -54,9 +54,9 @@ class Model:
 
     name: str
     estimator: Estimator
-    params: dict[str, object]
+    params: dict[str, Any]
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "Model":
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> Model:
         self.estimator.fit(X, y)
         return self
 
@@ -81,7 +81,7 @@ LIGHTGBM_TUNABLE: tuple[str, ...] = (
 )
 
 
-def _check_overrides(overrides: dict[str, object], allowed: tuple[str, ...], who: str) -> None:
+def _check_overrides(overrides: dict[str, Any], allowed: tuple[str, ...], who: str) -> None:
     """Reject a tuned-param key the model doesn't expose, instead of silently dropping it."""
     unknown = [k for k in overrides if k not in allowed]
     if unknown:
@@ -90,7 +90,7 @@ def _check_overrides(overrides: dict[str, object], allowed: tuple[str, ...], who
         )
 
 
-def build_logreg(*, seed: int | None = None, overrides: dict[str, object] | None = None) -> Model:
+def build_logreg(*, seed: int | None = None, overrides: dict[str, Any] | None = None) -> Model:
     """LogReg baseline: median-impute → standard-scale → logistic regression.
 
     Imputation lives **in the pipeline** (not the feature layer) so the era-NULL
@@ -133,7 +133,7 @@ def build_logreg(*, seed: int | None = None, overrides: dict[str, object] | None
     return Model(name="logreg", estimator=estimator, params=params)
 
 
-def build_lightgbm(*, seed: int | None = None, overrides: dict[str, object] | None = None) -> Model:
+def build_lightgbm(*, seed: int | None = None, overrides: dict[str, Any] | None = None) -> Model:
     """LightGBM contender: native NaN handling, no imputation, no scaling.
 
     The era-NULL pattern is fed in as-is — LightGBM routes NaN down its own branch, so
@@ -147,7 +147,7 @@ def build_lightgbm(*, seed: int | None = None, overrides: dict[str, object] | No
         seed = config.DEFAULT_SEED
     overrides = dict(overrides or {})
     _check_overrides(overrides, LIGHTGBM_TUNABLE, "build_lightgbm")
-    hp: dict[str, object] = {
+    hp: dict[str, Any] = {
         "n_estimators": 200,
         "learning_rate": 0.05,
         "num_leaves": 31,
@@ -181,7 +181,7 @@ BUILDERS = {"logreg": build_logreg, "lightgbm": build_lightgbm}
 
 
 def build_all(
-    *, seed: int | None = None, tuned: dict[str, dict[str, object]] | None = None
+    *, seed: int | None = None, tuned: dict[str, dict[str, Any]] | None = None
 ) -> list[Model]:
     """The full contender field, in a fixed order (determinism of the comparison).
 

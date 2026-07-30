@@ -10,7 +10,6 @@ era-NULL passthrough, and the "nothing promoted yet" 503 path.
 
 from __future__ import annotations
 
-import mlflow
 import pandas as pd
 import pytest
 from mlflow.tracking import MlflowClient
@@ -24,9 +23,9 @@ from mlflow.tracking import MlflowClient
 pytest.importorskip("fastapi", reason="needs the `[serve]` extra (F4/ADR-009)")
 pytest.importorskip("httpx", reason="needs the `[serve]` extra (F4/ADR-009)")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from pdm_mlops import config, features, registry, serve, train  # noqa: E402
+from pdm_mlops import config, features, registry, serve, train
 
 NAME = config.REGISTERED_MODEL_NAME
 

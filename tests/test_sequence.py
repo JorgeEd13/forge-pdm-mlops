@@ -8,7 +8,6 @@ number is the GPU run; here the TCN is a tiny CPU model purely to prove the cont
 
 from __future__ import annotations
 
-import mlflow
 import numpy as np
 import pytest
 from mlflow.tracking import MlflowClient

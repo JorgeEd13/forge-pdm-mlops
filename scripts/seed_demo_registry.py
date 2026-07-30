@@ -40,7 +40,8 @@ from pathlib import Path
 import mlflow
 from mlflow.tracking import MlflowClient
 
-from pdm_mlops import config, registry, train as train_mod
+from pdm_mlops import config, registry
+from pdm_mlops import train as train_mod
 
 #: A **class-rich** fixture seed. The default training seed (42) lands a single-class
 #: unit-grouped test split on the reduced fixture (``DegenerateSplit``); 0 is class-rich

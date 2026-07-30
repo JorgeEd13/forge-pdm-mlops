@@ -139,7 +139,7 @@ def suggest_mapping(headers: list[str]) -> dict[str, str | None]:
         key=lambda t: t[0],
         reverse=True,
     )
-    mapping: dict[str, str | None] = {sig: None for sig in features.FEATURE_COLUMNS}
+    mapping: dict[str, str | None] = dict.fromkeys(features.FEATURE_COLUMNS)
     used_signals: set[str] = set()
     used_headers: set[str] = set()
     for score, sig, hdr in scored:

@@ -75,11 +75,18 @@ on display.
 
 ## The four things worth your time
 
-### 🚦 A worse model cannot reach production
+### 🚦 A model that scores worse cannot reach production
 
 Promotion to the `production` alias is **metric-gated**: `pdm promote` reads the candidate's
 and the incumbent's ROC-AUC from their MLflow source runs and moves the alias **only if the
-candidate clears the gate**. A worse candidate does *not* promote — asserted by test — and
+candidate clears the gate**.
+
+> **What the gate does and does not decide.** It compares two point estimates of one
+> metric on one fixed grouped split (~27 held-out units). That is enough to stop a
+> visibly worse model and to make promotion reproducible; it is *not* a confidence
+> interval, and a candidate that regresses on calibration, latency or a subgroup
+> while holding ROC-AUC passes it untouched. The mechanism is the deliverable here —
+> the statistical power is bounded by a synthetic fleet of 134 units. A worse candidate does *not* promote — asserted by test — and
 that rejection is a **governed, structured outcome, not an exception**. Rollback restores the
 prior version deterministically.
 

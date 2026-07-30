@@ -188,6 +188,17 @@ def promote(
         promoted, reason = True, "first production version (no incumbent to beat)"
     elif incumbent == version:
         promoted, reason = True, "already the production version"
+    elif incumbent_metric is None:
+        # Unreachable while `incumbent_metric` is read whenever there is a
+        # distinct incumbent — but the comparison below is the gate itself, and
+        # the gate must never run against a missing number. Stating the case
+        # explicitly turns an invariant that lived only in the reader's head
+        # into one the type-checker verifies. If the read above is ever made
+        # conditional, this raises instead of computing `None - float`.
+        raise PromotionError(
+            f"incumbent v{incumbent} of '{name}' has no comparable "
+            f"{config.PRIMARY_METRIC}; the gate has nothing to compare against"
+        )
     elif candidate_metric >= incumbent_metric - min_delta:
         promoted = True
         reason = (

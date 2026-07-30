@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib.util
 
-import mlflow
 import pytest
 from mlflow.tracking import MlflowClient
 

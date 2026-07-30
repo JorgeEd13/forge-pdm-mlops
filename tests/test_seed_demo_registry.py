@@ -22,9 +22,9 @@ import pytest
 pytest.importorskip("fastapi", reason="needs the `[serve]` extra (F4/ADR-009)")
 pytest.importorskip("httpx", reason="needs the `[serve]` extra (F4/ADR-009)")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from pdm_mlops import config, features, registry, serve  # noqa: E402
+from pdm_mlops import config, features, registry, serve
 
 
 def _load_seed_module():
@@ -72,7 +72,7 @@ def test_baked_store_serves_model_loaded_true(seed_mod, tmp_path):
     health = client.get("/health").json()
     assert health["model_loaded"] is True and health["model_version"] is not None
 
-    row = {col: 1.0 for col in features.FEATURE_COLUMNS}
+    row = dict.fromkeys(features.FEATURE_COLUMNS, 1.0)
     resp = client.post("/predict", json={"readings": [row]})
     assert resp.status_code == 200
     body = resp.json()

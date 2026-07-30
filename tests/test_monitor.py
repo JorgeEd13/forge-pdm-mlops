@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("evidently", reason="needs the `[ops]` extra (F5/ADR-013)")
 
-from pdm_mlops import config, features, monitor  # noqa: E402
+from pdm_mlops import config, features, monitor
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_identical_data_is_not_drift(fixture_readings) -> None:
 
 def test_report_covers_exactly_the_feature_columns(fixture_readings) -> None:
     # Drift is monitored on the model's inputs — no more, no less.
-    _, ev = monitor.drift_report(fixture_readings, _shift_thermals(fixture_readings))
+    _, _ev = monitor.drift_report(fixture_readings, _shift_thermals(fixture_readings))
     distilled, _ = monitor.drift_report(
         fixture_readings, _shift_thermals(fixture_readings)
     )

@@ -22,8 +22,10 @@ models seed from one place — same seed + same data → same best params.
 
 from __future__ import annotations
 
+from typing import Any
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import mlflow
 import numpy as np
@@ -49,7 +51,7 @@ class TuneResult:
 
     name: str
     best_value: float
-    best_params: dict[str, object]
+    best_params: dict[str, Any]
     n_trials: int
 
 
@@ -83,11 +85,11 @@ def _clone(model: models.Model):
     return clone(model.estimator)
 
 
-def _suggest_logreg(trial) -> dict[str, object]:
+def _suggest_logreg(trial) -> dict[str, Any]:
     return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True)}
 
 
-def _suggest_lightgbm(trial) -> dict[str, object]:
+def _suggest_lightgbm(trial) -> dict[str, Any]:
     return {
         "n_estimators": trial.suggest_int("n_estimators", 100, 600, step=50),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),

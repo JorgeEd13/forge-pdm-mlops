@@ -23,7 +23,7 @@ whole demo must fit a **free** Cloud Run container and a **free** 0.5 GB Neon Po
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -248,7 +248,7 @@ def roll_up(frame: pd.DataFrame, proba: np.ndarray) -> list[UnitRisk]:
         out.append(
             UnitRisk(
                 unit_id=str(unit_id),
-                n_rows=int(len(p)),
+                n_rows=len(p),
                 risk=sustained,
                 peak=float(p.max()),
                 high_risk_share=float((p >= HIGH_RISK_ROW_THRESHOLD).mean()),

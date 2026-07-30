@@ -98,7 +98,7 @@ class CloudRunJobTrigger:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read())["access_token"]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise TriggerError(
                 "could not obtain a service-account token from the metadata server "
                 "(is this running on Cloud Run?)"
@@ -160,7 +160,7 @@ class LocalProcessTrigger:
             "--seed", str(spec.seed),
         ]
         try:
-            subprocess.Popen(  # noqa: S603 — fixed argv, values are ints/uuid from a validated spec
+            subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

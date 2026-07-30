@@ -67,7 +67,7 @@ KEEP_COLUMNS = [
 ]
 
 
-def _unit_event_mode(readings) -> "dict[str, str]":
+def _unit_event_mode(readings) -> dict[str, str]:
     """Map each ``unit_id`` → its failure mode (``""`` if the unit never fails).
 
     A unit fails in at most one mode (the earliest-sampled event wins, see

@@ -45,7 +45,7 @@ def execute_run(
         readings = generate.run_generation(spec)
         n_rows = store.append_readings(run_id, readings.loc[:, generate.stored_columns()])
         store.mark_succeeded(run_id, n_rows=n_rows)
-    except Exception as exc:  # noqa: BLE001 — every failure must land on the run row
+    except Exception as exc:
         store.mark_failed(run_id, error=f"{type(exc).__name__}: {exc}")
         raise
 
@@ -90,7 +90,7 @@ def main(
 
     try:
         n_rows = execute_run(run_id, spec, store)
-    except Exception as exc:  # noqa: BLE001 — already recorded on the run; report and exit
+    except Exception as exc:
         print(f"generation run {run_id} FAILED: {type(exc).__name__}: {exc}")
         return 1
     finally:

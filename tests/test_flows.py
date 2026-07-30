@@ -17,9 +17,9 @@ import pytest
 pytest.importorskip("prefect", reason="needs the `[ops]` extra (F5/ADR-013)")
 pytest.importorskip("evidently", reason="needs the `[ops]` extra (F5/ADR-013)")
 
-from mlflow.tracking import MlflowClient  # noqa: E402
+from mlflow.tracking import MlflowClient
 
-from pdm_mlops import config, flows, registry, train  # noqa: E402
+from pdm_mlops import config, flows, registry, train
 
 NAME = config.REGISTERED_MODEL_NAME
 

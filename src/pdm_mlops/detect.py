@@ -38,7 +38,7 @@ suspicion — imputed positions cannot manufacture an outlier on their own.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
@@ -118,7 +118,7 @@ class Detector(Protocol):
 
     name: str
 
-    def fit(self, readings: pd.DataFrame) -> "Detector": ...
+    def fit(self, readings: pd.DataFrame) -> Detector: ...
 
     def score(self, readings: pd.DataFrame) -> DetectionResult: ...
 
@@ -168,7 +168,7 @@ class MultivariateDetector:
         assert self.impute_means_ is not None, "MultivariateDetector.score before fit"
         return X.fillna(self.impute_means_).to_numpy(dtype="float64")
 
-    def fit(self, readings: pd.DataFrame) -> "MultivariateDetector":
+    def fit(self, readings: pd.DataFrame) -> MultivariateDetector:
         from sklearn.covariance import MinCovDet
         from sklearn.ensemble import IsolationForest
 
@@ -289,7 +289,7 @@ class TemporalDetector:
         )
         return np.abs(np.nan_to_num(mono)) >= self.drift_monotone_frac
 
-    def fit(self, readings: pd.DataFrame) -> "TemporalDetector":
+    def fit(self, readings: pd.DataFrame) -> TemporalDetector:
         """Learn (unsupervised) which signals support freeze- and drift-detection.
 
         * *continuous* (freeze-detectable): baseline exact-repeat rate below
@@ -397,7 +397,7 @@ class AutoencoderDetector:
     def __post_init__(self) -> None:
         self.mean_: pd.Series | None = None
         self.std_: pd.Series | None = None
-        self._model = None
+        self._model: Any = None
 
     def _standardize(self, readings: pd.DataFrame, *, fitting: bool) -> np.ndarray:
         X = _as_signal_matrix(readings)
@@ -409,7 +409,7 @@ class AutoencoderDetector:
         Z = (X.fillna(self.mean_) - self.mean_) / self.std_
         return Z.to_numpy(dtype="float32")
 
-    def fit(self, readings: pd.DataFrame) -> "AutoencoderDetector":
+    def fit(self, readings: pd.DataFrame) -> AutoencoderDetector:
         import torch
         from torch import nn
 

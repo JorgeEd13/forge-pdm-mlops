@@ -26,7 +26,7 @@ def test_score_ladder_grades_each_cheap_rung(readings) -> None:
     for r in score.rungs:
         assert 0.0 <= r.average_precision <= 1.0
         assert np.isnan(r.roc_auc) or 0.0 <= r.roc_auc <= 1.0
-        for fam, rec in r.family_recall.items():
+        for _fam, rec in r.family_recall.items():
             assert np.isnan(rec) or 0.0 <= rec <= 1.0
 
 

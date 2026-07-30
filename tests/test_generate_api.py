@@ -21,9 +21,9 @@ pytest.importorskip("fastapi", reason="needs the `[serve]` extra (F4/ADR-009)")
 pytest.importorskip("httpx", reason="needs the `[serve]` extra (F4/ADR-009)")
 pytest.importorskip("sqlalchemy", reason="needs the `[cloud]` extra (F7/ADR-015)")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from pdm_mlops import (  # noqa: E402
+from pdm_mlops import (
     config,
     features,
     generate,
@@ -174,7 +174,7 @@ def test_a_worker_that_cannot_start_is_recorded_on_the_run(tmp_tracking, gen_sto
 def _all_run_ids(store: store_gen.GenerationStore) -> list[str]:
     import sqlalchemy as sa
 
-    with store._engine.connect() as conn:  # noqa: SLF001 — a test may look inside
+    with store._engine.connect() as conn:
         return [r[0] for r in conn.execute(sa.text("select run_id from generation_runs"))]
 
 

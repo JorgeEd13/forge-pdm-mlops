@@ -38,6 +38,8 @@ existing ``[deep]`` torch extra (no new dependency); falls back to CPU when CUDA
 
 from __future__ import annotations
 
+from typing import Any
+
 import os
 from dataclasses import dataclass, field
 
@@ -291,7 +293,6 @@ def _build_tcn_module(in_channels: int, channels: int, layers: int, kernel: int)
     field (the cheapest way to see a slope across a long window). The last timestep's
     features (a learned temporal embedding) feed a linear head → one logit per window/row.
     """
-    import torch
     from torch import nn
 
     class _Chomp(nn.Module):
@@ -350,12 +351,12 @@ class TCNClassifier:
     seed: int = config.DEFAULT_SEED
     device: str | None = None
 
-    _model: object = field(default=None, init=False, repr=False)
+    _model: Any = field(default=None, init=False, repr=False)
     _windows: _Windows | None = field(default=None, init=False, repr=False)
     _device: str = field(default="cpu", init=False, repr=False)
 
     @property
-    def params(self) -> dict[str, object]:
+    def params(self) -> dict[str, Any]:
         """Flat, MLflow-friendly description of the contender."""
         return {
             "model_type": "tcn",
@@ -378,7 +379,7 @@ class TCNClassifier:
             return self.device
         return "cuda" if torch.cuda.is_available() else "cpu"
 
-    def fit(self, readings: pd.DataFrame, train_idx: np.ndarray, y: np.ndarray) -> "TCNClassifier":
+    def fit(self, readings: pd.DataFrame, train_idx: np.ndarray, y: np.ndarray) -> TCNClassifier:
         import torch
         from torch import nn
 

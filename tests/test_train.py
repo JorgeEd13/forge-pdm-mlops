@@ -8,12 +8,10 @@ backend (no server, no network). These assert the F2 DoD: **two tracked runs**, 
 
 from __future__ import annotations
 
-import mlflow
 import pytest
 from mlflow.tracking import MlflowClient
 
 from pdm_mlops import config, data, sequence, train
-
 
 # The default seed (42) holds out fixture units that happen to have zero failures, so
 # its test split is single-class and ROC-AUC is undefined there (see

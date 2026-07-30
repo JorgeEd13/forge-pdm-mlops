@@ -17,7 +17,7 @@ import pytest
 # `[serve]` skip. store_pg imports it lazily, so importing pdm_mlops never needs it.
 pytest.importorskip("sqlalchemy", reason="needs the `[cloud]` extra (F7/ADR-015)")
 
-from pdm_mlops import features, store_pg  # noqa: E402
+from pdm_mlops import features, store_pg
 
 
 @pytest.fixture

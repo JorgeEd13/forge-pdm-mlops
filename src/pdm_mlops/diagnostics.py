@@ -22,6 +22,8 @@ numeric CSVs still land, so diagnostics never become a hard dependency.
 
 from __future__ import annotations
 
+from typing import Any
+
 import csv
 import tempfile
 from dataclasses import dataclass
@@ -82,13 +84,17 @@ def feature_importance(model: models.Model, feature_names: list[str]) -> list[tu
     For LogReg the estimator is a pipeline; the linear coefficients live on its final
     ``clf`` step and are taken in absolute value (scaled inputs → comparable magnitudes).
     """
-    est = model.estimator
+    est: Any = model.estimator  # branch is by model.name, not by type
     if model.name == "lightgbm":
         importances = np.asarray(est.feature_importances_, dtype=float)
     else:
         clf = est.named_steps["clf"]
         importances = np.abs(np.asarray(clf.coef_, dtype=float)).ravel()
-    pairs = list(zip(feature_names, importances.tolist()))
+    # strict=True: if the fitted model ever carries a different number of
+    # features than `feature_names` (a preprocessing change that adds or drops
+    # a column), a lenient zip would silently truncate and misattribute EVERY
+    # importance instead of failing. Fail loudly — this feeds a diagnosis.
+    pairs = list(zip(feature_names, importances.tolist(), strict=True))
     return sorted(pairs, key=lambda p: p[1], reverse=True)
 
 
@@ -98,7 +104,7 @@ def _threshold_sweep(y_true: pd.Series, proba: np.ndarray) -> list[tuple[float, 
     # precision_recall_curve returns one fewer threshold than precision/recall points.
     return [
         (float(t), float(p), float(r))
-        for t, p, r in zip(thresholds, precision[:-1], recall[:-1])
+        for t, p, r in zip(thresholds, precision[:-1], recall[:-1], strict=True)
     ]
 
 

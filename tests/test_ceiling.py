@@ -93,9 +93,9 @@ def test_decompose_covers_horizon_and_modes(base, readings):
     y_test = base.y[base.test_idx]
     assert sum(s.n_positive for s in d.by_horizon) == int(y_test.sum())
     # Every failure mode present in the test positives is decomposed.
-    modes_test = set(
+    modes_test = {
         m for m in readings["failure_mode"].to_numpy()[base.test_idx].astype(str) if m and m != "nan"
-    )
+    }
     assert {s.label for s in d.by_mode} == modes_test
     # A slice that is single-class reports None rather than a meaningless AUC.
     for s in d.by_horizon + d.by_mode:

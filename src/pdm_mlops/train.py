@@ -15,9 +15,10 @@ the real ``pdm train`` regenerates the full dataset (ADR-001).
 
 from __future__ import annotations
 
+from typing import Any
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
 
 import mlflow
 import pandas as pd
@@ -93,7 +94,7 @@ def train(
     register: bool = True,
     readings: pd.DataFrame | None = None,
     load: Callable[..., pd.DataFrame] | None = None,
-    tuned: dict[str, dict[str, object]] | None = None,
+    tuned: dict[str, dict[str, Any]] | None = None,
     clean: bool | None = None,
     audit: bool = False,
     diagnose: bool = False,

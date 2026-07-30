@@ -34,9 +34,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 import pandas as pd
 
@@ -147,7 +148,7 @@ class GenerationStore:
             n_units=spec.n_units,
             days=spec.days,
             seed=spec.seed,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         with self._engine.begin() as conn:
             conn.execute(
@@ -183,13 +184,13 @@ class GenerationStore:
         )
 
     def mark_running(self, run_id: str) -> None:
-        self._update_run(run_id, status=STATUS_RUNNING, started_at=datetime.now(timezone.utc))
+        self._update_run(run_id, status=STATUS_RUNNING, started_at=datetime.now(UTC))
 
     def mark_succeeded(self, run_id: str, *, n_rows: int) -> None:
         self._update_run(
             run_id,
             status=STATUS_SUCCEEDED,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(UTC),
             n_rows=int(n_rows),
         )
 
@@ -202,7 +203,7 @@ class GenerationStore:
         self._update_run(
             run_id,
             status=STATUS_FAILED,
-            finished_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(UTC),
             error=str(error)[:500],
         )
 
@@ -424,7 +425,7 @@ def open_store(url: str | None = None) -> GenerationStore | None:
         return None
     try:
         return GenerationStore(resolved)
-    except Exception:  # noqa: BLE001 — an unreachable DB must not break app startup
+    except Exception:
         return None
 
 
@@ -447,5 +448,5 @@ def _as_dict(value: Any) -> dict[str, float | None]:
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

@@ -293,7 +293,7 @@ def test_upload_no_mapping_selected_returns_400(tmp_tracking, fixture_readings) 
     resp = client.post(
         "/demo/upload",
         files={"file": ("b.csv", csv, "text/csv")},
-        data={"mapping": json.dumps({c: None for c in features.FEATURE_COLUMNS})},
+        data={"mapping": json.dumps(dict.fromkeys(features.FEATURE_COLUMNS))},
     )
     assert resp.status_code == 400
 
