@@ -1514,3 +1514,40 @@ deliberately had it not score. This also means the "two dependency surfaces" cla
 written: the split is real at the *extras* level, but both images sit on a base carrying the training
 stack. **The real fix is a lighter worker image** (move the training stack into its own extra), which
 touches every image and belongs to its own phase, not smuggled into an IaC one.
+
+---
+
+## ADR-028 — Static analysis is a curated, enforced gate (and how it was almost not one)
+
+**Status:** Accepted · 2026-07-30
+
+**Context.** This repo had no `ruff`, no `mypy`, no lint gate — while every module carried
+`from __future__ import annotations` and thorough type hints. Hints nothing ever checks are
+documentation wearing a type system's clothes. An external review named it, correctly, as the
+cheapest rigor gap to close.
+
+**Decision.** ruff + mypy, enforced in CI as a **separate `lint` job** (not a matrix cell, so a
+failure names itself in the run list).
+
+- **Curated rule set, not `ALL`.** Every rule enabled is one this repo actually passes, so a red
+  gate always means a *new* defect and never a pre-existing backlog. Widening the set is a
+  deliberate change.
+- **`E501` is off, deliberately.** `ruff format` is NOT enforced: reformatting the codebase would
+  rewrite `git blame` across a commit log that is a working engineering record. Without a
+  formatter, line length is the least informative rule in the set, and the real violations left
+  are embedded markup, base64 assets and test fixtures — none of which read better wrapped.
+- **`B008` is scoped off for `serve.py` only.** FastAPI's dependency-injection idiom *is* a
+  function call in an argument default (`file: UploadFile = File(...)`); ruff is right in general
+  and wrong for FastAPI route signatures.
+- **mypy targets 3.12** for the numpy-stub reason above (PEP 695 in shipped stubs).
+
+**Consequences.**
+
+- The type hints became load-bearing. mypy's first run found four `zip()` calls without `strict=`, two on paths where a length mismatch produces a **wrong number** rather than an error — feature names against importances in `diagnostics.py`, and request rows against probabilities in `serve.py`. It also flagged that the promotion gate computed `incumbent_metric - min_delta` on a value the checker could not prove non-None; the invariant held, but it lived only in the reader's head, in a promotion gate. It is now an explicit `PromotionError`.
+- **The gate is only as good as the check that verifies it, and mine was broken.** I verified
+  locally with `ruff check . -q | grep '^Found'` — and `-q` *suppresses that very line*, so the
+  grep could never match and "clean" was printed unconditionally. CI failed minutes later on
+  findings that had been there the whole time. **Verify tools by exit code, never by grepping
+  their output**, and ask of any check: *if this were broken, would this line go red?*
+- **Adding a gate and not looking at its first run leaves it indistinguishable from a passing
+  one.** Poll `gh run list` in the same session that adds a workflow.
