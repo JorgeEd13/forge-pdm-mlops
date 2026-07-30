@@ -38,10 +38,9 @@ existing ``[deep]`` torch extra (no new dependency); falls back to CPU when CUDA
 
 from __future__ import annotations
 
-from typing import Any
-
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd

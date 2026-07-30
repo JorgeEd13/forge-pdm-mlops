@@ -22,12 +22,11 @@ numeric CSVs still land, so diagnostics never become a hard dependency.
 
 from __future__ import annotations
 
-from typing import Any
-
 import csv
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import mlflow
 import numpy as np

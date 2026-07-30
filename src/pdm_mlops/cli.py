@@ -20,10 +20,9 @@ the command stays honest about what is and isn't wired yet.
 
 from __future__ import annotations
 
-from typing import Any
-
 import argparse
 import sys
+from typing import Any
 
 from . import __version__
 

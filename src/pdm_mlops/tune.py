@@ -22,10 +22,9 @@ models seed from one place — same seed + same data → same best params.
 
 from __future__ import annotations
 
-from typing import Any
-
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import mlflow
 import numpy as np

@@ -15,10 +15,9 @@ the real ``pdm train`` regenerates the full dataset (ADR-001).
 
 from __future__ import annotations
 
-from typing import Any
-
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import mlflow
 import pandas as pd
