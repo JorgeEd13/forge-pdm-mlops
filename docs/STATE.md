@@ -1205,6 +1205,73 @@ different STATE lines.
     features.LEAKY_COLUMNS` from outside — a cross-module drift guard that covers **one** of the
     four names. `anomaly_type` and `is_outlier` could leave the denylist with no test going red.
 
+- **Study backlog, queued 2026-09-04 (APROFUNDAMENTOS `R2-T2`, the two contenders + tracked
+  training):** six findings over `src/pdm_mlops/models.py` and `src/pdm_mlops/train.py`, **none
+  fixed** — the study programme documents, it does not repair. Measurement baseline for the scoped
+  suite (`tests/test_models.py tests/test_train.py`): **14 passed**, 56.8 s; tree restored
+  afterwards (`git checkout -- src/pdm_mlops/models.py src/pdm_mlops/train.py`). Numbers come from a
+  real run on the committed fixture at `seed=0`: 21,600 x 9 train / 7,776 x 9 test rows, **25 train
+  units / 9 test units**, target rate 5.28% / 3.82%, **21.41% NaN** in the training matrix; ROC-AUC
+  **logreg 0.6896**, **lightgbm 0.7041** (winner, registered as v1). Six mutation points were run
+  (ceiling per the study brake; the flavor one has two variants, so seven runs) and **four came back
+  green**. Two control mutations went red
+  (`max` -> `min` on the winner: 1 failed; inverting the flavor dispatch for both models: 6 failed
+  in 9.5 s), so the scoped suite is not dead — the green results below are missing assertions.
+  **T2-6 is the one that matters**: registering the *loser* instead of the winner is green across
+  the **full 205-test suite** (698.9 s), so the repo cannot currently tell those two apart. Nothing
+  here is externally reachable (no external attack path was exercised — the claim is only that these
+  are not one) and no committed public document is factually wrong, so no item is 🔴 URGENT under the
+  study brake's narrow valve; T2-6 is the first line to fix when the block unfreezes.
+  - **T2-1 — `train.py`'s module docstring and `train()`'s docstring both say "file" MLflow
+    backend; it is SQLite.** L10 says "a **local file MLflow backend**" and the `tracking_uri` arg
+    says "Tests pass a tmp `file:` URI", while L133 calls `config.sqlite_tracking_uri(...)` and
+    `tests/test_train.py` L32 builds a SQLite URI. Stale since ADR-004 moved off the file store
+    (MLflow 3 put it into maintenance mode). Docs-only, no runtime effect. Fix: correct both
+    sentences to SQLite.
+  - **T2-2 — `build_all` silently drops an unknown *model* name in `tuned`.** The loop iterates
+    `BUILDERS` and reads `tuned.get(name)`, so `tuned={"lgbm": {...}}` is ignored without error:
+    the run trains at baseline and is logged `tuned=False`, while `clean` still flips to `True`
+    (because `clean = tuned is not None`) — a half-applied configuration. **Measured:**
+    `build_all(seed=0, tuned={"nosuchmodel": {"C": 3.0}})` returns both baseline models with **zero
+    warnings**, while `tuned={"logreg": {"bogus_param": 1}}` raises
+    `ValueError: build_logreg: unknown hyper-parameter(s) ['bogus_param']` — unknown *parameter*
+    keys raise, unknown model names do not. No production caller in `src/` builds `tuned` outside
+    `BUILDERS` (`tune.run`, `cli.py`), but `train.train(tuned=…)` and `build_all(tuned=…)` are
+    public API and `tests/test_train.py` already passes a hand-written literal, so this is a latent
+    trap with the door open, not an unreachable path. Fix: validate the keys of `tuned` against
+    `BUILDERS` and raise, mirroring `_check_overrides`.
+  - **T2-3 — the artifact-flavor dispatch is a string comparison and nothing asserts the recorded
+    flavor.** `_flavor_log_model` branches on `if model.name == "lightgbm"`, so any other name
+    (a renamed or third contender) falls through to the sklearn flavor. **Measured:** routing
+    LightGBM through the sklearn flavor (`if False:`) leaves the scoped suite at **14 passed**, and
+    it runs in **31 s instead of 57 s** — the only visible signal, and no test measures it. The
+    artifact loses the native-flavor metadata that the serving layer's reload depends on. Fix: an
+    assertion on `mlflow.models.get_model_info(...).flavors`, plus a dispatch table keyed on an
+    explicit flavor field so an unknown name raises.
+  - **T2-4 — `seed` is logged twice per run.** `mlflow.log_params(model.params)` already carries
+    `"seed"` (every builder puts it there) and the next line logs `"seed"` again. Safe only because
+    both sides always hold the same value; MLflow raises on a conflicting re-log, so a future
+    builder that derived its seed would blow up in `train()` for a reason unrelated to the cause.
+    Fix: drop the explicit line, or stop putting the seed in `params`.
+  - **T2-5 — `register_model` is called with the legacy `runs:/<id>/model` URI and MLflow 3 resolves
+    it by fallback.** **Measured** on a real run: "WARNING mlflow.tracking._model_registry.fluent:
+    Run with id <id> has no artifacts at artifact path 'model', registering model based on
+    models:/m-<id> instead". Registration works (v1 created); the risk is a deprecation with a
+    countdown, the third time this stack has moved under this file (file store, `skops`, now this).
+    Fix: register the `ModelInfo` returned by `log_model` directly.
+  - **T2-6 — no test ties the registered version back to the winning run.** The F2 DoD test asserts
+    `registered_version is not None`, that exactly one version exists, and that its number matches
+    the summary — never *which run* it came from. **Measured:** changing the registration to
+    `results[0].run_id` (the LogReg, measurably the worse model: 0.6896 vs 0.7041) leaves the scoped
+    suite at **14 passed** and the **full suite at 205 passed** (698.9 s) — the blindness is
+    repo-wide, not local to one test file — while `format_summary` still prints
+    `lightgbm 0.7041  <- winner`. Report
+    and registry can disagree in silence, which breaks the project's central promise ("which model
+    is current and on what evidence") at exactly the link that makes it verifiable. F3's promotion
+    gate and F4's alias-based serving build on top of this link. Fix: one assertion —
+    `assert versions[0].run_id == summary.winner.run_id`. **Do this one first when the R2 block
+    unfreezes.**
+
 
 ## Notes
 
