@@ -1140,6 +1140,72 @@ every step). Still pending on the notebook (independent of F6): the F4 clean-110
 `[ops]` F5 tests' green, and the F2.8 GPU `pdm ceiling` numbers — a merge that's additive across
 different STATE lines.
 
+- **Study backlog, queued 2026-09-04 (APROFUNDAMENTOS `R2-T1`, data + feature contract):** four
+  findings over `src/pdm_mlops/data.py` and `src/pdm_mlops/features.py`, **none fixed** — the study
+  programme documents, it does not repair. Measurement baseline for the scoped suite
+  (`tests/test_data.py tests/test_features.py tests/test_suspect.py`): **17 passed**, 9.6 s; tree
+  restored afterwards (`git checkout -- src/pdm_mlops/features.py`). Shape numbers come from a real
+  full regeneration on this machine (`data.load_readings()`, 26 s): **3,473,280 rows · 19 columns ·
+  134 units**, target rate 5.17%; `features.prepare()` splits it into **100 train / 34 test units**
+  (2,592,000 / 881,280 rows; 5.38% / 4.53% positive). A control mutation (`GroupShuffleSplit` →
+  `ShuffleSplit`) produced **5 failures**, so the green results below are missing coverage, not a
+  dead suite. Nothing leaks today — the `FEATURE_COLUMNS` allowlist is what holds, and the shipped
+  split carries exactly those nine columns. **T1-2 is 🔴 a wrong sentence in a committed public
+  document** (ADR-003 states a column count that is off by one) and should be corrected on its own,
+  ahead of the rest; T1-1 is an *unsupported* claim rather than a proven-false one; none of the four
+  is an externally reachable hole (no external attack path was exercised — the claim here is only
+  that these findings are not one).
+  - **T1-1 — the `can-telemetry-forge==0.2.0` pin does not pin bytes, so "byte-identical across
+    machines" is unsupported.** `pyproject.toml` L73 pins the `[generate]` extra, and both
+    `data.py`'s module docstring and ADR-001 claim every machine regenerates byte-identical data
+    from the same config + pinned generator. **Measured:** on this machine that requirement resolves
+    to an *editable* install of a sibling working tree —
+    `importlib.metadata.distribution('can-telemetry-forge').read_text('direct_url.json')` returns
+    `{"dir_info": {"editable": true}, "url": "file:///home/.../public/can-telemetry-forge"}` — and
+    `git -C ../can-telemetry-forge describe --tags` returns `fatal: No names found`, i.e. no tag
+    anchors `0.2.0`; the version string is hand-written in the neighbour's `pyproject.toml`. Any
+    commit in the generator changes the data without changing the pin, and CI never installs the
+    generator, so nothing catches it. Fix: record the generator commit (or the parquet hash)
+    alongside the generated dataset, and soften the ADR sentence to what is actually enforced.
+  - **T1-2 — ADR-003 says "the eight J1939 channels"; `FEATURE_COLUMNS` has nine.**
+    `vibration_mms` was added when the generator's ADR-020 made vibration a learnable channel; the
+    module comment in `features.py` L35–37 records that, the ADR text does not. **Measured:**
+    `len(features.FEATURE_COLUMNS) == 9`. Documentation-only, but it is the document a reviewer
+    reads first. Fix: a dated addendum in ADR-003, not a silent rewrite.
+  - **T1-3 — `assert_no_leakage` is an enumerated denylist of 4 names over a 19-column table, and
+    the committed fixture hides the gap.** `anomaly_signal` is written by the same labelling pass as
+    `anomaly_type` and is **not** in `LEAKY_COLUMNS`. **Measured:** `features.assert_no_leakage`
+    **passes** on a frame whose columns are `engine_speed_rpm`, `anomaly_signal`, `runtime_hours`
+    and `equipment_age_days` — i.e. it does not object to `anomaly_signal` (it still raises, as
+    designed, on any frame that does carry one of the four listed names, so this is about the gap in
+    the list, not a broken guard). On the full frame, `anomaly_signal` is non-empty on **exactly the
+    same 159,164 rows** as `anomaly_type`, which is the execution-level evidence that the two come
+    from the same labelling pass (the generator's own column table in
+    `../can-telemetry-forge/src/can_telemetry_forge/io/writers.py` L141 describes it as "which
+    signal carries the row's labeled defect"). And `data/sample_readings.parquet` has **15 columns**, without
+    `anomaly_signal`, `t_index`, `runtime_hours` or `equipment_age_days` — so no test on the fixture
+    can ever exercise the gap. Nothing leaks today: the `FEATURE_COLUMNS` allowlist is what actually
+    holds. Fix: derive the check from the source schema (flag any column that is neither an
+    allowlisted feature nor an explicitly declared covariate) instead of listing four names.
+  - **T1-4 — the leakage guard is name-based, so the derived-feature branch is guarded but blind.**
+    In `features.prepare`, `suspect_feature=True` passes the **whole** `readings` frame (target
+    included) to `suspect.compute_suspect` and then re-runs `assert_no_leakage` on the augmented
+    matrix. The guard only compares column names, so a suspect score that used the target would
+    still be called `signal_suspect` and pass. **Measured:** deleting that `assert_no_leakage` call
+    leaves the scoped suite at **17 passed** (`tests/test_suspect.py` included) — it has never once
+    fired in a test. Fix: pass only the signal columns into `compute_suspect`, or add a provenance
+    check; a name check cannot express this invariant.
+  - **Suite-level finding (same session, no separate item):** disarming the leakage guard entirely
+    (shrinking `LEAKY_COLUMNS` to the target *and* deleting both `assert_no_leakage` call sites) and
+    running the **full** suite gives **2 failed, 203 passed** (697.8 s, 205 tests collected). Both
+    failures are in `tests/test_ceiling.py` (`test_honest_frame_rejects_leak_features`,
+    `test_leak_features_are_label_side_only`), which pass on the clean tree (13 passed, 61.8 s);
+    `tests/test_features.py` stays **fully green** with the guard gone. What caught the mutation is
+    `ceiling.py` keeping its own `LEAK_FEATURES` list and asserting `"failure_mode" in
+    features.LEAKY_COLUMNS` from outside — a cross-module drift guard that covers **one** of the
+    four names. `anomaly_type` and `is_outlier` could leave the denylist with no test going red.
+
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
