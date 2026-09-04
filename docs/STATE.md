@@ -4,6 +4,15 @@ Updated: 2026-07-14 (session: **F17 SHIPPED** — the infra is Terraform; the Ia
 
 ## Current focus
 
+> 🧊 **FROZEN for feature work since 2026-09-04 — study block open.** This repo was cut into
+> **21 territories** by the APROFUNDAMENTOS programme (`repo-base-career/sistema/APROFUNDAMENTOS_ROADMAP.md`
+> §R2). While the block is open, that programme reads this code line by line and measures its
+> guards by mutation, so a moving tree would invalidate the measurements. **Epoch-2 phases F16 and
+> F10–F15 are on hold**, and findings from the study go to this file's backlog rather than being
+> fixed there. The freeze lifts when the R2 block closes. It is a *convention*, not a mechanism —
+> nothing enforces it; Jorge can lift it by saying so.
+
+
 **► ACTIVE PLAN — Epoch 2 (F10–F17): [`docs/EPOCH2_PLAN.md`](EPOCH2_PLAN.md).** Read that doc's
 **§1 Locked decisions** before touching any Epoch-2 phase — it captures the irrecoverable reasoning
 (why the sequence contender re-opens despite F2.7; committee-of-specialists; independent multi-mode
