@@ -1272,6 +1272,89 @@ different STATE lines.
     `assert versions[0].run_id == summary.winner.run_id`. **Do this one first when the R2 block
     unfreezes.**
 
+- **Study backlog, queued 2026-09-08 (APROFUNDAMENTOS `R2-T3`, the unsupervised detection
+  ladder):** five findings over `src/pdm_mlops/detect.py` and `tests/test_detect.py`, **none
+  fixed** — the study programme documents, it does not repair. Measurement baseline for the
+  scoped suite (`tests/test_detect.py`): **10 passed**, 8.0–10.0 s, torch present so the
+  autoencoder test runs. All numbers below come from the committed smoke fixture (29,376 rows,
+  34 units, 9 signal channels, 4.05% labelled outlier rate) with each detector **fit and scored
+  on that same frame**, which is what `fit_score_all` does; per-family recall is measured at a
+  top-2% alarm budget (588 rows). Five mutation points were run (the study brake's ceiling) and
+  **four came back green**; one control went red, so the suite is not dead. `detect.py` was
+  restored to HEAD afterwards and the scoped suite re-run green.
+  **T3-1 is the one that matters** — it is a live loss of detection quality, not a latent trap.
+  Nothing here is reachable from outside the process and no committed public document is
+  factually wrong (ADR-005 correctly describes what the code *intends*), so no item is 🔴 URGENT
+  under the study brake's narrow valve.
+  - **T3-1 — min-max scaling erases the Mahalanobis view; the multivariate rung has one view,
+    not two.** `MultivariateDetector.score` min-maxes each view and combines with
+    `np.maximum`, promising "suspect if *either* view flags it". **Measured:** raw Mahalanobis
+    on this fixture has median **8.63**, p99 **6,291.9** and max **660,557.4** — the max is
+    ~76,000x the median — so after min-max its median is **1.18e-5**. `maha > iso` on **0.19%**
+    of rows; `combined == iso` on **99.81%**. Cost at the 2% budget: `joint_outlier` recall
+    **0.104** as shipped vs **0.391** using raw Mahalanobis alone and **0.353** with a
+    percentile-rank transform instead of min-max; `obvious_outlier` **0.377** as shipped vs
+    **1.000** raw. Mutating `combined = np.maximum(iso, maha)` to `combined = iso` leaves the
+    scoped suite at **10 passed** — it is nearly a no-op, which is the point. The rung exists
+    for the joint outlier, the one family no per-column check can see. Fix: rank- or
+    quantile-transform before combining (or keep fitted quantiles), plus one assertion —
+    `assert (maha > iso).mean() > 0.05`.
+  - **T3-2 — the suspicion score is batch-relative, and there is a fixed threshold downstream.**
+    `_minmax01` takes `lo`/`hi` from the scored batch. **Measured:** scoring only the 28,186
+    rows with no outlier label still yields a max of **1.0** and **14 rows above 0.9** — a
+    perfectly clean batch manufactures a worst case; and the same five clean rows score
+    `0.8949 / 0.7158 / 0.8404 / 0.3070 / 0.2522` in the clean-only batch vs
+    `0.8494 / 0.6795 / 0.7977 / 0.2914 / 0.2394` in the full batch. ADR-005 §7 has
+    `data_quality_check` comparing a batch's suspect rate against a fitted baseline and F5
+    reuses it as a drift signal, i.e. a fixed threshold over a ruler that changes per batch.
+    (How `suspect.py` consumes these scores was not exercised here — the measurement is a
+    property of `detect.py`.) Fix: store fit-time quantiles and score against them, so the
+    scale is absolute and comparable across batches.
+  - **T3-3 — `TemporalDetector` learns channel eligibility on the very batch it scores, so it
+    goes blind on the most broken batch.** `fit` marks a channel freeze-detectable when its
+    baseline exact-repeat rate is under `CONTINUOUS_REPEAT_MAX` (1%), and `fit_score_all` fits
+    and scores the same frame. The unsupervised selection works and is worth keeping — on this
+    fixture it keeps 7 of 9 channels and drops exactly `oil_pressure_kpa` and
+    `boost_pressure_kpa` (the ones that legitimately plateau), and drops `def_level_pct` from
+    drift eligibility (it only decreases), matching the comments with nobody hand-listing a
+    channel. **Measured sensitivity:** relaxing `continuous_repeat_max` to 0.5 takes the
+    continuous list from 7 to 9 channels and the flag rate from **0.00058 to 0.423**, so
+    eligibility is what holds the detector together. A widespread freeze therefore raises a
+    channel's baseline repeat rate above the bound and removes it from the list. Fail-safe
+    pointing the wrong way. Fix: fit eligibility on a healthy baseline slice and pin it, the
+    way imputation medians are already pinned at fit.
+  - **T3-4 — the test suite pins shape, not detection: 4 of 5 mutations pass green.** Nine of
+    ten tests assert shape, `[0,1]` range, determinism or exception type; the only numeric
+    assertion is `test_temporal_does_not_flag_everything` (`< 0.20`) against an actual rate of
+    **0.00058** — a **345x** gap. **Measured:** (a) relaxing `DRIFT_MONOTONE_FRAC` from 0.9 to
+    0.5 takes the temporal rung from **17 flagged rows at precision 1.000** to **3,180 rows at
+    precision 0.050** (precision measured against `is_outlier`, which marks 1,190 rows; the
+    looser `anomaly_type != ""` marks 1,387 and reads 0.056) and the **full 205-test suite
+    exits 0**; (b) deleting the `-` before
+    `self._iforest.score_samples(...)`, which inverts the detector, leaves **10 passed** while
+    `joint_outlier` recall at the 2% budget drops **0.104 → 0.000** and top-2% precision is
+    **0.049**; (c) `combined = iso` (T3-1) is green; (d) dropping the redundant `& ~np.isnan(v)`
+    is green with **byte-identical output** (NaN != NaN already breaks the run — the guard
+    cannot be made observable). The one red control was deleting the missing-column `raise` in
+    `_as_signal_matrix`: **1 failed, 9 passed**, but the exception that failed the test came
+    from sklearn (`ValueError: X has 8 features, but IsolationForest is expecting 9`), not from
+    the repo's guard; the temporal path also raises, as a bare `KeyError` from `X[col]` inside
+    `fit`. So that guard buys the diagnostic message and the ADR-001 pointer, not the failure
+    itself. Fix: the fixture carries `anomaly_type`/`is_outlier` and the scoring harness already
+    computes what is missing — assert a per-family recall floor and a precision floor for the
+    cheap rungs, plus a flag-rate floor, not just a ceiling.
+  - **T3-5 — three comments are wrong, and one of them teaches the wrong concept.** (a) The
+    **module docstring still describes the temporal rung that was thrown away**: it defines
+    `sensor_stuck` as "rolling variance -> 0" and `sensor_drift` as "a persistent nonzero
+    rolling slope", which is exactly the formulation ADR-005 §3 records as failing at F1 ~0.02
+    while flagging >85% of rows, and which `TemporalDetector`'s own docstring 200 lines below
+    contradicts. The most-read comment in the file teaches the definition the rewrite disproved.
+    (b) `DetectionResult`'s docstring promises "per-row suspicion score **plus the column means
+    it imputed with**"; the dataclass has `name` and `scores` only. (c) `impute_means_` stores
+    `X.median()`, not means. Docs-only, no runtime effect. Fix: rewrite the module docstring's
+    two bullets to the shipped signatures (exact-value run / sustained monotone creep) with a
+    dated pointer to the rewrite, drop the phantom clause, and rename to `impute_medians_`.
+
 
 ## Notes
 
