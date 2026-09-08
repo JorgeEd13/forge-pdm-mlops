@@ -1448,6 +1448,109 @@ different STATE lines.
     column** of the recall table, because neither is listed in `OBVIOUS_FAMILIES` nor
     `SUBTLE_FAMILIES`. A new generator family would vanish from the detail silently.
 
+- **Study backlog, queued 2026-09-08 (APROFUNDAMENTOS `R2-T5`, grouped HPO, diagnostics-as-artifact
+  and the training watchers):** six findings over `src/pdm_mlops/tune.py`,
+  `src/pdm_mlops/diagnostics.py` and their two test files, **none fixed** — the study programme
+  documents, it does not repair. Measurement baseline for the scoped suite
+  (`tests/test_tune.py tests/test_diagnostics.py tests/test_train.py`, optuna and matplotlib both
+  installed): **19 passed**, ~245 s. All numbers come from the committed smoke fixture with
+  `FIXTURE_SEED = 0` and `suspect_feature=True`: 21,600 training rows over **25 units**, 7,776 test
+  rows over 9 units, positive rate 5.282% / 3.819%, `min(N_SPLITS, 25) = 5` folds of 5 units each,
+  all class-rich. Five mutation points were run (the study brake's ceiling) and **three came back
+  green**; the two reds are described below. Both source files were reverted with
+  `git checkout -- src/pdm_mlops` after each run and `git status --porcelain` was **empty** at the
+  end of the campaign. **T5-1 and T5-2 are the ones that matter** — T5-1 is the phase's central
+  guarantee with no test that executes it, T5-2 is an artifact that describes a different model
+  than the one it is attached to. Nothing here is reachable from outside the process and nothing
+  makes the README or the live demo state a falsehood today, so no item is 🔴 URGENT under the
+  study brake's narrow valve.
+  - **T5-1 — the test named after the grouped-CV guarantee never calls the grouped CV.**
+    `test_grouped_cv_never_shares_a_unit_across_folds` **constructs its own `GroupKFold`** and
+    asserts that scikit-learn behaves as documented; it never invokes `tune._grouped_cv_auc`, and
+    its only coupling to this repo is the `N_SPLITS` constant. **Measured by mutation:** replacing
+    `GroupKFold(n_splits=n_splits)` with `KFold(n_splits=n_splits, shuffle=True, random_state=0)`
+    and `cv.split(X, y, groups)` with `cv.split(X, y)` — i.e. deleting the ADR-003 guarantee
+    *inside the search* — leaves **all six tests in `test_tune.py` green**; the scoped suite goes
+    to **1 failed, 18 passed**, and the single red is
+    `test_diagnostics.py::test_real_fixture_fit_trips_overfit_by_design`. It fails for an unrelated
+    reason: leaked folds raise the CV score from **0.7605 to 0.8641** (same model, same data,
+    measured directly), the **train−CV** overfit gap drops from **0.224** to ~0.12, below the 0.15
+    limit (the train−test gap is a different number, 0.272, and is not what the watcher uses), and
+    the watcher stops firing. So the failure message says *"the model stopped overfitting"*, which
+    points a reader at the watcher — and the natural "fix" would be to loosen the threshold,
+    exactly the wrong direction. For scale, the same leak buys the linear model only **+0.0159**
+    (0.6961 → 0.7120): what exploits it is tree capacity. Fix: a test that calls the production
+    path — monkeypatch `tune.GroupKFold` and assert it was used, or a behavioural version on a
+    dataset where unit identity perfectly predicts the label (grouped ≈ 0.5, ungrouped ≈ 1.0).
+  - **T5-2 — the learning-curve artifact drops the model's hyper-parameters.**
+    `diagnostics._learning_curve` rebuilds the estimator at each point with
+    `models.BUILDERS[model.name](seed=int(model.params.get("seed", config.DEFAULT_SEED)))`,
+    forwarding **only the seed**, so the curve attached to a **tuned** run — the entire point of
+    F2.6 — is a picture of the untuned model. **Measured without any mutation:** a default (deep)
+    LightGBM and a shallow regularised one (`num_leaves=15, min_child_samples=100,
+    reg_lambda=10.0`), both fitted on the same frame at seed 0, produce **identical curves in all
+    eight cells** (`lc_deep == lc_shallow` is `True`): train 0.9981 / 0.9951 / 0.9900 / 0.9845 and
+    test 0.6671 / 0.7128 / 0.7379 / 0.7123 at fractions 0.25 / 0.5 / 0.75 / 1.0. The overrides were
+    present on the model (`shallow.params` carries all three) — the function does not read them.
+    Secondary, same function: `iloc[:k]` takes a **prefix** of a unit-ordered frame, so "25% of
+    rows" is really **7 of 25 machines** (measured), which is arguably a better learning curve than
+    random rows but is not what `train_fraction` says. Fix: `_clone(model)` — as
+    `tune._grouped_cv_auc` already does — or pass the tunable subset of `model.params` as
+    `overrides`; and document (or change) the prefix growth.
+  - **T5-3 — the diagnostics test checks filenames, never content.**
+    `test_log_diagnostics_writes_artifacts` asserts only that four CSV names exist under
+    `diagnostics/<model>` in the run. **Measured by mutation:** pointing `log_diagnostics` at the
+    training split instead of the held-out one (`ds.X_test` → `ds.X_train`, and `ds.y_test` →
+    `ds.y_train` in both the calibration and the threshold-sweep calls) leaves the scoped suite at
+    **19 passed**. Calibration measured on data the model has already seen reads *better* than the
+    truth — it shows a well-calibrated model precisely when it is not — and the threshold sweep
+    suggests an optimistic operating point; diagnostics are the one output here whose consumer is a
+    human, so no second number contradicts them. The same blindness covers empty (header-only)
+    CSVs. Fix: one discriminating assert — the `count` column of `calibration.csv` must sum to
+    `len(ds.y_test)` (7,776), not to the training size (21,600).
+  - **T5-4 — the majority-baseline guard's margin can be deleted with zero reds.**
+    `beats_majority = test_auc > MAJORITY_AUC + MAJORITY_MARGIN` (i.e. `> 0.505`). **Measured by
+    mutation:** `MAJORITY_MARGIN: float = 0.005` → `0.0` leaves the scoped suite at **19 passed**,
+    byte-identical to baseline. Both tests that exercise the guard pin `test_auc` at exactly
+    **0.50**, and the comparison is a strict `>`, so `0.50 > 0.505` and `0.50 > 0.500` are both
+    false — the guard still trips, the asserts still pass, and the number separating them is never
+    observed. With the margin gone, a model at test ROC-AUC **0.503** — indistinguishable from
+    chance at this sample size — is *approved* by `pdm train --audit`. This is the shape that
+    matters: the mutation that **widens a policy by one number** is invisible while the one that
+    **deletes a mechanism** (T5-1's control, and the seeded sampler) is caught, and widening is
+    what a real pull request looks like. Fix: a boundary test — 0.503 must be rejected, 0.51 must
+    pass.
+  - **T5-5 — record drift: four statements written in the present tense about things that moved.**
+    (a) The `N_SPLITS` comment says *"the fixture's ~15 train units"*; the measured value is **25**
+    (the fixture was re-stratified by ADR-019 after the comment was written). (b) `tune()` logs
+    `log_param("cv", f"GroupKFold(n_splits={N_SPLITS})")` — the **constant**, always 5 — while the
+    value actually used is `min(N_SPLITS, groups.nunique())`; on a dataset with fewer than 5 units
+    the run would record a cross-validation that did not happen. This is the only item with
+    operational consequence — and it is **by code inspection, not measured**: the committed fixture
+    has 25 units, so `min(5, 25) == 5` and no run on it can distinguish the logged value from the
+    effective one. (c) `TuneResult.n_trials` (and therefore `log_param("n_trials", …)` and
+    `format_tune`) is the **requested budget**, not the number of trials that completed;
+    `len(study.trials)` is the real one — also by inspection, since Optuna propagates an objective
+    exception rather than silently dropping the trial, so no cheap repro exists. (d) The `tune.py` module docstring states the measured HPO
+    delta (+0.003 / 0.000 on data 0.2.0) in the present tense and without a date. Fix: correct the
+    unit count, log the effective `n_splits`, record completed trials, and date the docstring's
+    measurement.
+  - **T5-6 — two silent degradations, neither firing today.** (a) `_grouped_cv_auc` skips
+    single-class folds with a bare `continue` and **never records how many it skipped**, so a
+    "5-fold" mean can quietly become a one-fold holdout while MLflow still logs
+    `GroupKFold(n_splits=5)` and the watcher's overfit gap is computed against it. On the fixture at
+    seed 0 all five folds are class-rich (measured: 5 units, 2 classes, 134–322 positives each), so
+    this is latent, not active. (b) `_matplotlib()` catches bare `Exception`, so a *broken*
+    matplotlib (corrupt font cache, unavailable backend, incompatible version) is indistinguishable
+    from an absent one and the PNGs vanish without a warning — and because the only diagnostics test
+    checks CSV names (T5-3), the suite stays green. Fix: count and expose skipped folds (and log the
+    effective fold count with T5-5b); narrow the catch to `ImportError` and `warnings.warn` on
+    anything else.
+  - **Also, not a defect but an undeclared limit:** the fold positives on the fixture range from
+    **134 to 322** across the five folds (a 2.4x spread), which enters the objective as noise in the
+    5-fold mean. `StratifiedGroupKFold` would keep the grouping guarantee and cut that variance at
+    no cost; the choice of plain `GroupKFold` is not recorded anywhere as a decision.
+
 
 ## Notes
 
