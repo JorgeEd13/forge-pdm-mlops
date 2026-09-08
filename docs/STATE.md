@@ -1355,6 +1355,99 @@ different STATE lines.
     two bullets to the shipped signatures (exact-value run / sustained monotone creep) with a
     dated pointer to the rewrite, drop the phantom clause, and rename to `impute_medians_`.
 
+- **Study backlog, queued 2026-09-08 (APROFUNDAMENTOS `R2-T4`, the scoring harness and
+  `signal_suspect`):** five findings over `src/pdm_mlops/detect_score.py`,
+  `src/pdm_mlops/suspect.py` and their two test files, **none fixed** — the study programme
+  documents, it does not repair. Measurement baseline for the scoped suite
+  (`tests/test_detect_score.py tests/test_suspect.py tests/test_features.py`): **18 passed**,
+  ~12 s. All numbers come from the committed smoke fixture (29,376 rows, 34 units, 2.5 h step,
+  **1,190 labelled outlier rows = 4.0509%**), with torch present so the autoencoder rung can be
+  scored. Five mutation points were run (the study brake's ceiling) and **four came back green**;
+  one control went red. Both source files were restored from a pre-mutation copy afterwards and
+  the scoped suite re-run green (`git status --porcelain` clean).
+  **T4-1 and T4-2 are the ones that matter** — T4-1 is the project's central guarantee resting on
+  a string comparison, T4-2 is a live loss of feature quality. Nothing here is reachable from
+  outside the process. ADR-005 is factually strained in two places (see T4-5) but describes what
+  the code intends, so no item is 🔴 URGENT under the study brake's narrow valve.
+  - **T4-1 — the leakage guard checks column NAMES and never values.**
+    `features.assert_no_leakage` is `[c for c in LEAKY_COLUMNS if c in X.columns]`;
+    `suspect.add_signal_suspect` calls it on a hand-enumerated view and its docstring claims this
+    "proves the feature did not smuggle in a label". **Measured by mutation:** replacing the body
+    of `compute_suspect` with `return readings["failure_within_h"].to_numpy().astype(float)` — the
+    target itself, under the name `signal_suspect` — leaves the guard silent,
+    `features.prepare(suspect_feature=True)` returning normally, and both tests with "leakage" in
+    their names (`test_signal_suspect_is_added_and_leakage_safe`,
+    `test_suspect_column_is_not_a_label`) **green**; a logistic regression on that frame scores a
+    held-out **ROC-AUC of 1.000**. The two reds are the watcher tests, failing for an unrelated
+    arithmetic reason. Leaking `is_outlier` instead leaves the scoped suite at **18 passed**, zero
+    reds — and the model gets slightly *worse* (test AUC **0.6954** with the leaked column vs
+    **0.7000** with no suspect feature at all), because sensor dirt barely predicts failure. That
+    second variant is the more instructive one: the guard is equally silent whether the smuggled
+    value helps or hurts, so a green leakage test says nothing about either. Fix: add a
+    value-side check alongside the name check — no feature column may correlate above ~0.99 with
+    any column in `LEAKY_COLUMNS` — and downgrade the docstring's "prove" to "check".
+  - **T4-2 — the mean combiner throws away the best rung; the default excludes it entirely.**
+    `suspect._combine` averages the rungs and `compute_suspect` defaults to
+    `use_autoencoder=False`. **Measured (average precision against `is_outlier`, seed 42):**
+    autoencoder alone **0.661**, multivariate **0.218**, temporal **0.054** (chance = the base
+    rate, 0.0405); `signal_suspect` as shipped **0.237**, and **0.437** with the autoencoder
+    folded in — i.e. **34% below simply using the autoencoder alone**. ADR-005 §6 records that the
+    autoencoder "earns its place" while the shipped feature is the mean of the two weakest rungs.
+    A simple mean is only sound when components are of comparable quality; here they differ by
+    more than 10x in AP. Fix: combine with `max`, or weight by the AP the harness already
+    computes, and state the three numbers in the docs so the `[deep]`-extra trade-off is explicit
+    rather than implied.
+  - **T4-3 — the data-quality watcher cannot see a uniformly bad batch, and raises the wrong
+    exception on the worst one.** `data_quality_check` calls `compute_suspect`, which **fits** the
+    ladder on the incoming batch and min-maxes within it, so suspicion is a rank inside the batch.
+    **Measured** (`baseline_rate = max(fit_baseline_rate(clean_rows), 1e-4)`): on a batch of all
+    **28,186** clean rows, freezing `coolant_temp_c` across the whole batch → **does not trip**,
+    and multiplying all nine signals by 1000 → **does not trip**. Freezing all nine raises a raw
+    sklearn `ValueError` ("The covariance matrix of the support data is equal to 0"), **not**
+    `DataQualitySpike`, so a caller following the docstring's `except DataQualitySpike` misses the
+    worst possible batch. **The verdict also depends on batch size rather than on the corruption:**
+    the same two mutations on a **2,000-row** clean slice both *do* trip — in every one of those
+    four runs the ladder flags the same **2 rows**, so what changes is the denominator
+    (2/2,000 = 0.001 > 3x the 1e-4 floor; 2/28,186 = 7e-05 < it), not the data quality. A watcher
+    whose answer moves with how many rows you hand it is not measuring the batch. The repo's own test passes because
+    `readings[readings["is_outlier"]]` is a *mixed* batch by construction. Related: the 0.5 flag
+    threshold over a mean is near-unreachable — the fixture's max `signal_suspect` is **0.9743**
+    and only **19 of 29,376 rows** reach 0.5, so `fit_baseline_rate` on the clean rows returns
+    **7.0957e-05**, a baseline of **2 rows**; both tests paper over this with
+    `max(fit_baseline_rate(normal), 1e-4)`, i.e. the test carries a guard the production code
+    lacks. Fix: fit the ladder once on a healthy reference window, persist it, and only
+    `transform` incoming batches (this is the same fix as T3-2/T3-3 and T4-4); wrap the fit so
+    degenerate batches raise `DataQualitySpike`; floor the baseline in the code, not the test.
+  - **T4-4 — `signal_suspect` is computed before the train/test split.** `features.prepare` builds
+    the column over the full frame and calls `GroupShuffleSplit` afterwards, so the
+    IsolationForest, the robust covariance and the min-max all see the held-out units. **Measured:**
+    all **9 of 9 test units** are seen by the ladder fit; **8,080 of 21,600 training rows (37%)**
+    change by more than 0.01 when the ladder is fit on the training rows only, max shift **0.0700**.
+    Not label leakage — the ladder reads no labels — but train-test contamination that the
+    (correct) group split does not protect against, so any reported test metric on a
+    `suspect_feature=True` frame is optimistic by an unmeasured margin. Fix: express the ladder as
+    a fit/transform estimator inside a `Pipeline` so it is fit per fold.
+  - **T4-5 — the report and the policy can disagree with the suite fully green.** (a) The caption
+    `"(family columns = recall at a fixed top-2% alarm budget)"` is a string literal: raising
+    `ALARM_BUDGET` from 0.02 to 0.20 moves `joint_outlier` recall **0.10 → 0.64**, `drift`
+    **0.06 → 0.55** and `obvious` **0.38 → 0.94** while the caption still says 2%, at **18
+    passed**. (b) Flipping `ae_earns = ae_subtle > best_cheap_subtle` to `<` makes the report
+    contradict the numbers printed beside it, at **18 passed** — the offline suite runs without
+    torch, so ADR-005 §6's outward-facing claim has no verifier. (c) Loosening
+    `SUSPECT_RATE_SPIKE_FACTOR` from 3.0 to **16.0** stays green (red only at 17.0), so the
+    watcher can be made **5.3x blinder** unnoticed. (d) The `ALARM_BUDGET` comment says "2% ≈ the
+    planted-outlier base rate"; the measured rate is **4.0509%**, which imposes an unstated
+    **recall ceiling of 49.41%** (588 slots / 1,190 outlier rows) on every number in the table.
+    The one red control was removing tie-awareness in `_alarm_set` (`scores > kth` → `>=`):
+    **1 failed, 17 passed** on `test_alarm_set_is_tie_aware_for_sparse_scores` — the mutation the
+    suite does catch. Fix: derive the caption from the `budget` argument;
+    assert the AE verdict in a torch-marked test; assert a recall floor per family; correct the
+    base-rate comment and print the ceiling next to the table.
+  - **Also, not a defect but an undeclared limit:** `can_frame_corrupt` (89 rows) and
+    `can_frame_stale` (63) carry `is_outlier=True` and so count in ROC-AUC/AP, but appear in **no
+    column** of the recall table, because neither is listed in `OBVIOUS_FAMILIES` nor
+    `SUBTLE_FAMILIES`. A new generator family would vanish from the detail silently.
+
 
 ## Notes
 
