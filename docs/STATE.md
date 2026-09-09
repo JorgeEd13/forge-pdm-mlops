@@ -1722,6 +1722,77 @@ different STATE lines.
     `overall = 0.6865` and `honest = 0.7041` — two fields of one report describing different
     models, printed as if consistent. Fix: fit once in `characterize` and pass the honest
     probability into both instruments.
+- **Study backlog, queued 2026-09-09 (APROFUNDAMENTOS `R2-T8`, the governed registry — gated
+  promotion + rollback):** five findings over `src/pdm_mlops/registry.py` and
+  `tests/test_registry.py`, **none fixed** — the study programme documents, it does not repair.
+  Measurement baseline: `python -m pytest tests/test_registry.py -q -p no:randomly` → **14 passed**,
+  ~35 s (notebook). Five mutation points were run (under the study brake's ceiling of six) and
+  **four came back green**; `src/pdm_mlops/registry.py` was restored after each round and
+  `git diff --stat` on it was **empty** at the end of the campaign. **T8-1 is the only one
+  reachable without mutating anything** — a shipped CLI command tracebacks — and **T8-3 is the most
+  dangerous** — it turns `rollback` into a no-op that reports success. Scope note: the gate itself
+  decided correctly in every case measured (the worse candidate never promoted, the alias never
+  moved when it shouldn't, rollback restored the right version on the unmutated tree); what these
+  findings measure is how much of that could stop being true with no test going red. The HTTP
+  surface looks unaffected by T8-1: `serve.py` uses `registry._client`, `production_version`,
+  `PRODUCTION_ALIAS` and `version_metric` (all four exercised by the passing `tests/test_serve.py`),
+  and the three write-side names — `promote`, `rollback`, `format_promotion` — do not appear in it.
+  That last part is a **static grep**, not an execution result: no test drives serving into the
+  crashing report path, so "serving cannot reach T8-1" is read from the source, not measured.
+  - **T8-1 — 🔴 URGENT: `format_promotion` raises `TypeError` when the candidate is already the
+    production version, and `pdm promote` run twice is enough to hit it.** The `inc` branch tests
+    `result.incumbent_version is not None` and then formats `result.incumbent_metric` with `:.4f`.
+    `promote` deliberately skips reading the incumbent's metric when the candidate *is* the
+    incumbent (`incumbent != version` in the read condition), so it legitimately returns
+    `incumbent_version='2'` with `incumbent_metric=None`. **Measured:** promote v2, then
+    `registry.promote(client, NAME, v2)` again → `PromotionResult(..., incumbent_metric=None,
+    promoted=True, reason='already the production version')`, and `registry.format_promotion(...)`
+    on it raises `TypeError: unsupported format string passed to NoneType.__format__`. Reachable
+    from the advertised CLI: `pdm promote` without `--version` resolves `latest_version`
+    (`cli.py:265`) and prints `format_promotion(promotion)` unconditionally (`cli.py:275`), and
+    `main()` has **no `try`/`except` at all**, so the user gets a traceback. The decision is correct
+    and the alias does not move — only the report crashes (measured: the alias still points at the
+    same version after the `TypeError`). `flows.py` promotes the version `train` has just registered
+    (`flows.py:129-153`), so the "candidate is the incumbent" state should not arise there — **read,
+    not executed**: no probe drove the flow into that state. Fix: test `incumbent_metric is not None`, or make
+    the version/metric pair unconstructible in `PromotionResult`.
+  - **T8-2 — the default gate tolerance has no test.** `test_tie_promotes_by_default` pins the tie
+    rule and `test_min_delta_tolerates_a_small_regression` pins an *explicit* `min_delta=0.01`;
+    nothing asserts that `DEFAULT_MIN_DELTA` is `0.0`. **Measured by mutation:** changing it to
+    `0.004` leaves the file at **14 passed** — it slips under the regression test, which uses a
+    0.005 gap. The module's headline guarantee silently weakens from "no worse model promotes" to
+    "no model more than 0.004 worse promotes"; for scale, 0.004 is about half the +0.0069 the
+    temporal-features rung earned in ADR-007. Fix: assert the constant, and add a default-path
+    rejection test at a gap smaller than 0.005.
+  - **T8-3 — the boundary `str(version)` normalisation has no test, and without it `rollback`
+    becomes a no-op that reports success.** Both sides normalise (module L176, test helper L60) and
+    neither asserts it; the whole suite passes `str`. **Measured by mutation:** deleting
+    `version = str(version)` leaves the file at **14 passed**; with it deleted, calling
+    `registry.promote(client, NAME, int(v2))` while v2 is production yields `promoted=True`,
+    `candidate_version=2`, `incumbent_version='2'` (because `'2' != 2`), writes
+    `superseded_production_version = '2'` **onto v2 itself**, and from then on `registry.rollback`
+    returns `2`, leaves the alias where it was, and the CLI prints "Rolled back: production is now
+    v2". The emergency lever silently stops working. Fix: a boundary test that promotes with an
+    `int` version and asserts the tag and the alias.
+  - **T8-4 — the deleted-predecessor guard in `rollback` has no test, and what it buys is the error
+    type, not safety.** `_get_version(client, name, prev)` carries its own comment ("Verify the
+    predecessor still exists…") and no test deletes a version. **Measured by mutation:** removing it
+    leaves the file at **14 passed**; building the case by hand (promote v1, promote v2,
+    `client.delete_model_version(NAME, v1)`, `rollback`) gives `PromotionError: model '…' version 1
+    not found in the registry` **with** the guard and `MlflowException: Model Version (name=…,
+    version=1) not found` **without** it. The alias moves in neither case — the backend refuses too.
+    So the guard upholds the documented `Raises: PromotionError` contract, and without it a library
+    exception reaches a CLI that has no handler. Fix: the test that deletes the predecessor.
+  - **T8-5 — the idempotent `incumbent == version` branch has no test, and removing it exposes a
+    misleading diagnostic.** **Measured by mutation:** deleting the branch leaves the file at
+    **14 passed**, and re-promoting the production version then raises `PromotionError: incumbent v1
+    of '…' has no comparable roc_auc; the gate has nothing to compare against`. Two readings: the
+    branch the source comment marks *unreachable* (L191) does fire as designed when the branch above
+    it is removed — a readable error instead of `None - float`, which is the empirical case for
+    encoding impossible states — but its **message is wrong**: the incumbent has a metric; the code
+    chose not to read it. Fix: an idempotence test (`promote` the current production version →
+    `promoted=True`, alias unchanged, no tag written) and a message that says the metric was not
+    read rather than not logged.
 
 
 ## Notes
