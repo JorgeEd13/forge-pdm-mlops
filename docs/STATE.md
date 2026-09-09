@@ -1635,6 +1635,94 @@ different STATE lines.
     allows the divergence. Fix: set `tcn.window = window` alongside the seed, or raise when an
     injected contender's window disagrees with the argument.
 
+- **Study backlog, queued 2026-09-09 (APROFUNDAMENTOS `R2-T7`, characterizing the ceiling):** six
+  findings over `src/pdm_mlops/ceiling.py` and `tests/test_ceiling.py`, **none fixed** — the study
+  programme documents, it does not repair. Measurement baseline: `pytest tests/test_ceiling.py -q`
+  → **13 passed**, ~62 s (notebook). All numbers below come from the committed smoke fixture
+  (29,376 rows, 34 units, 1,438 positives) at `FIXTURE_SEED = 0`, `window=6`; the reference report
+  on that fixture is honest per-row **0.7041**, `lightgbm_temporal` **0.6865**, stack **0.7065**
+  (margin **+0.0024**), fenced bound **1.0000** (gap **+0.2959**), `ceiling_is_data = False`.
+  Six mutation points were run (the study brake's ceiling) and **five came back green**;
+  `src/pdm_mlops/ceiling.py` was restored after each run and `git status --porcelain` was **empty**
+  at the end of the campaign. **T7-2, T7-3 and T7-4 are the ones that matter**: each drives the
+  capstone's headline flag to `ceiling_is_data = True` — i.e. towards *confirming* the thesis the
+  module exists to test — with the suite fully green. Scope note: every number published in
+  ADR-010 was produced by the correct path (clean honest frames, grouped inner folds, a bound that
+  really leaks); what these findings measure is that **almost nothing would notice if that path
+  stopped being correct**. **Public-surface note:** `characterize` + `format_report` are reachable
+  by a user — they back the shipped `pdm ceiling` subcommand (`cli.py`, advertised in the README) —
+  so T7-3's failure mode (a report printing *"leaks failure_mode, time_to_failure_h"* while leaking
+  nothing) would be visible to anyone running the artifact, not merely internal. The HTTP API and
+  the live demo are unaffected (`serve.py` never imports `ceiling`). On the unmutated tree the
+  report is truthful and reproduces the numbers the README narrates, so nothing states a falsehood
+  today and no item is 🔴 URGENT under the study brake's narrow valve.
+  - **T7-1 — the honest-path fence has no test at its call site.**
+    `test_base_frames_are_leak_free` calls `ceiling._assert_honest_frame` itself and
+    `test_honest_frame_rejects_leak_features` hands the function a hand-built bad frame: both prove
+    the *function* works, neither proves `build_base` *calls* it. **Measured by mutation:**
+    commenting out the two `_assert_honest_frame(...)` calls in `build_base` leaves
+    `tests/test_ceiling.py` at **13 passed** (report byte-identical to baseline). The layer that
+    would go missing is the one covering `time_to_failure_h` — a column this module derives, and
+    **measured**, `features.LEAKY_COLUMNS` upstream is
+    `('failure_within_h', 'failure_mode', 'anomaly_type', 'is_outlier')`, which does not list it.
+    Fix: a behavioural test — hand `build_base` a `readings` frame whose feature path would carry a
+    forbidden column and assert it raises.
+  - **T7-2 — both leakage guards are name-based, and an innocently-named leak makes the whole
+    capstone self-confirm.** `features.assert_no_leakage` and `ceiling.LEAK_FEATURES` walk lists of
+    column *names*; a column derived from the target under a telemetry-sounding name passes both.
+    **Measured by mutation:** adding `X_perrow["load_index"] = readings[config.TARGET]` inside
+    `build_base`, with both assertions left in place, leaves the file at **13 passed** and the
+    fixture report becomes honest **1.0000**, bound gap **0.0000**, stacking margin **0.0000**,
+    `ceiling_is_data = True`. All three instruments converge on "the honest model is exactly at the
+    information ceiling, the rungs are redundant, thesis confirmed" — the strongest claim the
+    report can make — produced by total label leakage with no test red. The convergence is not
+    independent: the three readings share one input frame. Fix: provenance rather than names —
+    build the honest matrix only through `features.select_features` (the allowlist that actually
+    holds) and forbid post-selection column assignment on the honest path.
+  - **T7-3 — nothing asserts that the upper bound actually leaks.**
+    `test_upper_bound_bounds_and_is_at_least_honest` asserts `ub.leaky >= ub.honest - 1e-9`, and a
+    tie satisfies it. **Measured by mutation:** deleting the two leaky-column assignments in
+    `upper_bound` leaves the file at **13 passed**, with `honest = leaky = 0.7041` and
+    `gap = 0.0`. Worse, `UpperBound.leak_features` is the module constant rather than a description
+    of the frame that was fitted, so `format_report` still prints
+    `upper-bound (DIAGNOSTIC, leaks failure_mode, time_to_failure_h): 0.7041` — declaring a leak
+    that did not happen. By the `UpperBound` docstring's own reading, `gap = 0` means "the honest
+    model is at the ceiling", so a switched-off instrument reports the thesis confirmed. Fix:
+    assert `leaky > honest` with slack on a fixture where the bound must win, and derive
+    `leak_features` from the columns actually added.
+  - **T7-4 — the inner fold's grouping guarantee has no test, and dropping it inverts the published
+    verdict.** `_oof_predictions` uses `GroupKFold` and its docstring cites ADR-003, but no test
+    observes fold composition. **Measured by mutation:** swapping it for
+    `KFold(n_splits=n_splits, shuffle=True, random_state=seed)` leaves the file at **13 passed,
+    12 warnings** — `UserWarning: The groups parameter is ignored by KFold` was the only distinct
+    warning class captured, and it is the whole of the on-screen signal — while the fixture margin
+    moves from **+0.0024 to −0.0017**, flipping `beats_best_base` to
+    `False` and `ceiling_is_data` to `True`. That is ADR-010's central finding (the refutation)
+    silently inverted. Note the direction: row-wise folds make both rungs' OOF predictions
+    optimistic in similar ways, so the leak *flattens* the comparison rather than inflating it.
+    Fix: assert unit-disjointness across the inner folds the same way
+    `test_base_split_is_the_exact_f1_split` asserts it for the outer split.
+  - **T7-5 — the thesis flag reads one instrument while the write-up says three converge.**
+    `CeilingReport.ceiling_is_data` is `not self.stacking.beats_best_base`; the decomposition and
+    the bound do not enter it, although ADR-010 and the module docstring describe three converging
+    instruments. The margin it turns on is **+0.0073** (two-rung, full data) from a single
+    deterministic OOF meta-learner with no confidence interval — a limitation ADR-010 already
+    records in prose, but the boolean does not. Fix: either report a spread over repeated
+    seeds/folds, or have the property abstain (tri-state) when the margin is inside the measured
+    run-to-run variation.
+  - **T7-6 — the honest probability is fitted twice, so consistency between two report fields is a
+    coincidence.** `decompose`, `upper_bound`'s honest fit and the stacking probe's
+    `lightgbm_perrow` rung all call `_fit_predict` with identical arguments (same frame, y,
+    train/test indices and seed) — **measured by fingerprinting the four `_fit_predict` calls of one
+    `characterize` run: only two distinct fingerprints, the per-row fit repeated three times** —
+    wasted compute on the 3.47M-row runs. And because the value is
+    recomputed rather than shared, nothing ties `Decomposition.overall` to `UpperBound.honest`
+    despite the `UpperBound` docstring stating they are the same number. **Measured by mutation:**
+    pointing `decompose` at `base.X_temporal` leaves the file at **13 passed** with
+    `overall = 0.6865` and `honest = 0.7041` — two fields of one report describing different
+    models, printed as if consistent. Fix: fit once in `characterize` and pass the honest
+    probability into both instruments.
+
 
 ## Notes
 
