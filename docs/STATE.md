@@ -1551,6 +1551,90 @@ different STATE lines.
     5-fold mean. `StratifiedGroupKFold` would keep the grouping guarantee and cut that variance at
     no cost; the choice of plain `GroupKFold` is not recorded anywhere as a decision.
 
+- **Study backlog, queued 2026-09-09 (APROFUNDAMENTOS `R2-T6`, the temporal contender — causal
+  TCN):** five findings over `src/pdm_mlops/sequence.py` and `tests/test_sequence.py`, **none
+  fixed** — the study programme documents, it does not repair. Measurement baseline:
+  `pytest tests/test_sequence.py -q` → **10 passed**, ~24 s (notebook, torch 2.12+cu130, CUDA
+  available, so no test skipped for the missing `[deep]` extra); the full suite also passes
+  (**205 passed**, ~700 s). All numbers below come from the committed smoke fixture at `FIXTURE_SEED = 0` with the
+  tiny CPU TCN the tests use (`window=6, channels=4, layers=2, epochs=2`); the reference ladder on
+  that fixture is `lightgbm_perrow` **0.7041** / `lightgbm_temporal` **0.6360** / `tcn` **0.5935**
+  — toy numbers that measure the contract, never accuracy. Six mutation points were run (the study
+  brake's ceiling) and **four came back green**; `src/pdm_mlops/sequence.py` was restored after
+  each run and `git status --porcelain` was **empty** at the end of the campaign. **T6-1 and T6-2
+  are the ones that matter** — together they are the two halves of the causality guarantee ADR-007
+  advertises as *structural*, and neither has a test that goes red when it is deleted. Scope note:
+  every number published in ADR-007 was produced by the correct path (shared split, train-only
+  scaler, equal window via the CLI); what these findings measure is that **nothing would notice if
+  that path stopped being correct**. Nothing here is reachable from outside the process and nothing
+  makes the README or the live demo state a falsehood today, so no item is 🔴 URGENT under the
+  study brake's narrow valve.
+  - **T6-1 — the window-causality assertion cannot go red.**
+    `test_windows_are_causal_and_unit_bounded` asserts `(w.win_idx <= s).all()`, but `win_idx` is
+    produced by `np.clip(rawpos, us, s)` — the assertion restates the upper bound the clip has just
+    imposed, so it holds for any `rawpos` whatsoever. **Measured by mutation:** replacing
+    `rawpos = s - window + 1 + k` with `rawpos = s + k` — a window that points *forward* — leaves
+    `tests/test_sequence.py` at **9 passed, 1 skipped, 0 failed**. Under that mutation every window
+    collapses to the current row repeated (verified directly: `win_idx == s` at every position,
+    one distinct entry per window, `win_valid` all ones), i.e. the TCN silently stops being a
+    temporal model while still being reported as rung (c) of the ladder. The only signal on screen
+    is `test_left_pad_positions_are_zeroed_in_every_channel` turning into a **skip** — there are no
+    short-history rows left to inspect — which reads as routine. A second mutation confirms where
+    the guarantee actually lives: relaxing the clip's upper bound to `s + 1` is **inert**
+    (`10 passed`), because `rawpos` never exceeds `s` by construction (verified: no window entry
+    is greater than its current row). Fix: a behavioural test of the same shape as the one that
+    already guards rung (b) — corrupt a future row of a unit and assert an earlier row's window
+    contents (or score) do not move — and assert on `rawpos` rather than on the post-clip array.
+  - **T6-2 — the causal convolution has no test at all.**
+    ADR-007 states that causal padding *"structurally forbids intra-window future leakage"*. The
+    structure is two lines: `padding=(kernel-1)*dilation` on each `Conv1d` and the right-hand crop
+    in `_Chomp.forward`. **Measured by mutation:** replacing that crop with `return x` leaves
+    `tests/test_sequence.py` at **10 passed**. Under the mutation the conv stack emits **12**
+    timesteps for a 6-step window, so `h[:, :, -1]` — meant to be "the current instant" — becomes a
+    position built mostly from right-hand padding, and the fixture ROC-AUC of the tiny TCN *rises*
+    from **0.5935 to 0.6563**, so the metric does not flag it either. Within the current pipeline
+    the immediate damage is the head reading padding rather than leakage of real future data (each
+    batch element is a self-contained window); it becomes leakage the day someone feeds a whole
+    unit series at once, which is the obvious way to speed up inference. Fix: an equivalence test —
+    the module's output at the last position must be unchanged when timesteps after the window's
+    end are perturbed — or an explicit shape assertion that the stack's output length equals the
+    window length.
+  - **T6-3 — nothing prevents the scaler from seeing the test rows.**
+    `build_windows` standardises with `fit_rows = raw if train_idx is None else raw[train_idx]`,
+    documented as an offline convenience. **Measured by mutation:** `fit_rows = raw` — the scaler
+    fitted on every row, test rows included — leaves `tests/test_sequence.py` at **10 passed**.
+    `TCNClassifier.fit` does pass `train_idx` today, so the reported numbers are unaffected; what
+    is missing is any guard that would notice if it stopped. The magnitude of the resulting
+    contamination would be small (mean/std over hundreds of thousands of rows barely move with 25%
+    more data), which is precisely what makes it hard to spot while it poisons the honesty claim
+    the ladder exists to support. Fix: make `train_idx` required for the fitting path (keep the
+    `None` convenience only behind an explicit flag), and assert that the standardisation stats
+    computed with and without the test rows differ on a fixture where they must.
+  - **T6-4 — the verdict is tested for internal consistency, not for policy, and its resolution is
+    accidental.** `test_compare_runs_three_rungs_on_same_test_rows` asserts
+    `cmp.tcn_earns_its_place == (tcn > temporal)`, which ties the boolean to *a* comparison but not
+    to *the* comparison. **Measured by mutation:** relaxing `tcn_earns = tcn_metric >
+    temporal_metric` to `> temporal_metric - 0.01` leaves the file at **10 passed**; only at
+    `- 0.05` does it go to **1 failed, 9 passed**. The reason is arithmetic: the fixture margin is
+    **−0.0425** (tcn 0.5935 vs temporal 0.6360), so a tolerance smaller than that leaves both sides
+    of the equality `False`. The published margin on the full data is **0.0046** — ten times
+    smaller — so a 0.01 tolerance there would invert ADR-007's headline verdict while this suite,
+    which runs on the fixture, stayed green. (That 0.0046 is ADR-007's published figure, not
+    something reproduced here; ADR-010 already records the same-geometry TCN rung reproducing at
+    **0.7979** on torch 2.12+cu130 versus ADR-007's 0.8148 — a cross-CUDA numerics gap that widens
+    the margin rather than closing it.) Fix: assert the policy itself (strict inequality, no
+    tolerance) against synthesised metric pairs, independently of whatever the fixture happens to
+    produce.
+  - **T6-5 — `compare` force-syncs an injected contender's seed but not its window.** In the
+    `else` branch, `tcn.seed = seed` is applied and `tcn.window` is left alone, so an injected
+    `TCNClassifier(window=6)` competes against a rung (b) built with the `window` argument (24 by
+    default). That is exactly what the test suite does. **Measured:** on the fixture, rung (b)
+    scores **0.6360** at window 24 and **0.6865** at window 6 — a 0.0505 spread, an order of
+    magnitude larger than the 0.0046 margin the published verdict turns on. `pdm sequence` passes
+    the same window to both, so no published number is affected; the library contract is what
+    allows the divergence. Fix: set `tcn.window = window` alongside the seed, or raise when an
+    injected contender's window disagrees with the argument.
+
 
 ## Notes
 
