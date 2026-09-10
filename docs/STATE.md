@@ -1793,6 +1793,74 @@ different STATE lines.
     chose not to read it. Fix: an idempotence test (`promote` the current production version →
     `promoted=True`, alias unchanged, no tag written) and a message that says the metric was not
     read rather than not logged.
+- **Study backlog, queued 2026-09-09 (APROFUNDAMENTOS `R2-T9`, serving through the alias — the
+  contract between governance and HTTP):** five findings over `src/pdm_mlops/serve.py` L1–527 and
+  `tests/test_serve.py`, **none fixed** — the study programme documents, it does not repair.
+  Measurement baseline: `python -m pytest tests/test_serve.py -q` → **11 passed**, ~77 s (notebook).
+  Five mutation points were run (under the study brake's ceiling of six) and **three came back
+  green**; `src/pdm_mlops/serve.py` was restored after each round and `git diff --stat` on it was
+  **empty** at the end of the campaign. **T9-2 is the most dangerous**: the endpoint can serve
+  `1 - p` with the whole file green. Scope
+  note: on the unmutated tree every measured behaviour was correct — the promoted version is the one
+  served, `/health` distinguishes up from ready, `/predict` and `/model-info` answer 503 with nothing
+  promoted, and a fresh `ModelStore` follows a rollback. What these findings measure is how much of
+  that could stop being true with no test going red.
+  - **T9-1 — the model cache is never invalidated in production: a promotion or rollback only
+    reaches a running process at restart.** `ModelStore.clear()` exists and works, and the module
+    docstring (`serve.py:32`) says a rollback "is picked up by clearing the cache". **Measured:**
+    grepping for call sites (`\.clear()`) across the repository, `.venv` excluded, returns a single
+    caller — `tests/test_generate_api.py:303`. No endpoint, no job, no lifespan hook calls it.
+    `test_store_clear_repoints_after_rollback` does not cover this: it constructs a **new**
+    `ModelStore` on its penultimate line, so it proves a process starting *now* sees the restored
+    version, not that a serving process does. **Confirmed by probe:** a live store loaded on v2 keeps
+    answering `version == "2"` after a rollback and only reports `"1"` after an explicit `clear()`,
+    while a freshly built store reports `"1"` immediately. Impact: an emergency rollback does
+    not take the bad model out of a live instance until the container restarts. "No redeploy" stays
+    literally true (no image, no config changes) and operationally weaker than the docstring reads.
+    Fix: a TTL on the cached entry (bounded staleness, no cross-replica coordination needed), and
+    reword the docstring to describe what is wired rather than what is possible.
+  - **T9-2 — the positive-class column has no oracle: serving `1 - p` leaves the whole file green.**
+    `_load_predict_proba` returns `proba[:, 1]`. **Measured by mutation:** changing it to
+    `proba[:, 0]` leaves the file at **11 passed**. The only assertion on the values is
+    `all(0.0 <= p <= 1.0 for p in probs)`, and the complement is in range too. The service would
+    invert its product — the machine closest to failure gets the lowest probability — with nothing
+    red anywhere in the pipeline. Fix: assert **meaning**, not range: score the same rows through
+    `models.Model.predict_proba` and require equality, or assert ordering against a known-bad row.
+  - **T9-3 — an unknown signal key is silently dropped and answered with a confident 200.** The
+    request schema is `dict[str, float | None]` and `_to_frame` reindexes to
+    `features.FEATURE_COLUMNS`, so a caller who sends `egt_celsius` instead of `egt_c` has that
+    column dropped and the real signal scored as era-NULL missing, with nothing in the response
+    saying so. **Measured by request:** posting `egt_c_TYPO` in place of `egt_c` returns **200** with
+    a body carrying exactly `failure_probability`, `model_version`, `n_rows` — no mention of the
+    dropped key. Note there is **no precedent to copy** for the fix: the F8 upload path's
+    `unmapped_signals` lists the expected signals that were *missing*, not supplied keys that were
+    *ignored* — the opposite direction. Fix: echo ignored keys back in `PredictResponse`, or reject
+    unknown keys behind a strict flag; either way it is new behaviour, not an existing pattern
+    applied to one more endpoint.
+  - **T9-4 — `_is_demo_version` swallows every exception and errs toward *dropping* the honesty
+    label.** Its `except Exception: return False` means "not the demo model", so under a registry
+    hiccup the public demo stops labelling a fixture-trained number as a demo — the one claim this
+    repository works hardest to keep attached. `/model-info` performs the same lookup **without** a
+    try/except (`serve.py:450`), so the two surfaces disagree under failure: one errors, the other
+    asserts a full-data model. **Measured by fault injection:** making the client's
+    `get_model_version` raise `RuntimeError` yields `/predict` → **200 with `demo=False`** and
+    `/model-info` → **500** in the same process. Fix: return `True` (or a third "unknown" state) on
+    the degraded path, or log and propagate.
+  - **T9-5 — only the schema's `min_length=1` stands between an empty batch and a 500.** **Measured
+    by mutation:** removing `min_length=1` turns `test_empty_readings_is_rejected` red — but with
+    `ValueError: Input data must be 2 dimensional and non empty` raised inside `lightgbm/basic.py`,
+    i.e. the empty body traverses `_to_frame` and `_score_frame` and detonates inside the model,
+    which is a 500 in the running app. Nothing on the scoring path checks that the frame has rows.
+    Related, in the opposite direction: the three copies of `features.assert_no_leakage` on the
+    scoring paths (`serve.py:358`, `serve.py:481`, `upload.py:225`) all **execute on every request
+    and can never fail** — `_to_frame` reindexes to the nine feature columns and
+    `upload.build_frame` populates only those nine slots, so no label column can exist by the time
+    the guard runs. **Measured:** deleting both copies in `serve.py` leaves
+    `tests/test_serve.py tests/test_upload.py` at **36 passed**; the `upload.py` one was not
+    mutation-tested — that copy is argued structurally only. The module has guards where nothing
+    can go wrong and none where something can. Fix: a row-count check in `_score_frame`; and either
+    delete the non-firing guards or move one to the boundary where a leaky column could actually
+    enter.
 
 
 ## Notes
