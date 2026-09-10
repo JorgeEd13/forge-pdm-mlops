@@ -1912,6 +1912,40 @@ different STATE lines.
     The flow docstring and ADR-013 say the flow runs "in-process ... with no server"; under Prefect
     3.7.6 the test output logs `Stopping temporary server on http://127.0.0.1:…` — Prefect 3 starts
     a temporary local API server per run. Nothing to provision, but "no server" is literally false.
+- **Study backlog, queued 2026-09-10 (APROFUNDAMENTOS `R2-V1`, blind verification of the modelling
+  arc T1–T7):** two independent reviewers with no docs, each on its own copy of the tree (one on
+  `src/`, one on `tests/`), on the committed fixture. **None fixed.** Mutation score: code reviewer
+  **3 of 6** green, test reviewer **7 of 14** green. Only findings **not already queued** by
+  `R2-T1`…`R2-T7` are listed; the rest re-confirmed existing items (T4 `signal_suspect` fit before
+  the split, T5 learning curve ignores overrides, T5 CV test never calls `_grouped_cv_auc`, T1
+  leakage guard tested with one column — the last one found by both reviewers independently).
+  - **V1-1 — `TemporalDetector.fit` is row-order dependent.** `score` sorts by unit/time, `fit`
+    does not. **Measured:** shuffling rows before `fit` marks `oil_pressure`/`boost` as continuous
+    (the docstring says they are excluded) and **20,265** row scores change. Fix: sort in `fit`.
+  - **V1-2 — `_grouped_cv_auc` docstring says Optuna *prunes* an all-degenerate trial; it fails.**
+    **Measured:** Optuna logs `Trial 0 failed ... value nan`, then `ValueError: No trials are
+    completed yet.` `tune.py` sets no pruner; Optuna attaches its default `MedianPruner`, which never
+    acts because the objective reports no intermediate values. Fix: raise `optuna.TrialPruned`, or
+    reword.
+  - **V1-3 — stuck rule off by one against its docstring.** The docstring says a run of
+    `≥ STUCK_MIN_RUN` (4) exact-equal *samples*; **measured:** 4 identical samples → 0 flagged,
+    5 → 5 flagged (the counter counts repeats). Fix the docstring or the comparison; add a boundary
+    test.
+  - **V1-4 — the overfit guard passes silently when `cv_auc` is NaN.** All folds single-class →
+    `gap = nan` → `tripped=False`, even with `strict=True` (**measured**). Fix: treat a NaN gap as
+    tripped or raise.
+  - **V1-5 — a binary rung that flags more than the 2% alarm budget scores zero recall.**
+    **Measured:** 1,000 rows, 50 flagged, all positives → `alarms=0`, `recall=0.0`. The tie rule
+    admits only strictly-greater rows. Decide whether the metric should rank ties instead.
+  - **V1-6 — the ceiling's upper bound is the label.** **Measured** on the fixture: `failure_mode`
+    is non-empty for all **1,438** `y=1` rows and none of the **27,938** `y=0` rows, so the leaky
+    AUC is **1.0000** by construction and the reported gap is just `1 − honest`. Reword what the
+    bound claims, or use a leak that is not a relabelling of the target.
+  - **V1-7 — guards with no test (each mutation stayed green).** `_check_overrides` in
+    `models.py` (`if unknown:` → `if len(unknown) > 1:`; no test in `test_models.py` passes
+    `overrides`); `_minmax01` constant input (→ all ones); `suspect.py` baseline threshold
+    `>=` → `>` (no score lands exactly on 0.5); `sequence.py` `rolling(..., center=True)` (the
+    future-peek test corrupts only the last row).
 
 
 ## Notes
