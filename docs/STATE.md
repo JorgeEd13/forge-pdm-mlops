@@ -1861,6 +1861,57 @@ different STATE lines.
     can go wrong and none where something can. Fix: a row-count check in `_score_frame`; and either
     delete the non-firing guards or move one to the boundary where a leaky column could actually
     enter.
+- **Study backlog, queued 2026-09-10 (APROFUNDAMENTOS `R2-T10`, the closed loop that must not
+  auto-degrade):** six findings over `src/pdm_mlops/monitor.py`, `src/pdm_mlops/flows.py`,
+  `tests/test_monitor.py`, `tests/test_flows.py`, **none fixed** — the study programme documents, it
+  does not repair. Measurement baseline: `python3 -m pytest tests/test_monitor.py tests/test_flows.py
+  -q` → **9 passed**, ~64 s (notebook, Prefect 3.7.6, Evidently 0.6.7). Five mutation points were run
+  (under the study brake's ceiling of six) and **three came back green**; `src/` was restored after
+  each round and `git status --short src/` was clean at the end.
+  - **T10-2 🔴 URGENT — the scheduled cloud leg does not run, and when it runs the gate has nothing
+    to compare.** (a) **Measured:** `gh run list --workflow retrain.yml` → the **8 most recent runs**
+    (2026-07-20 … 2026-09-07) all concluded **`failure`**; on the latest, the failing step is the
+    install step (`pip install -e ".[ops,generate]"`), so the flow never executed. Cause not
+    investigated. (b) By reading (the flow step has never executed on a runner, so this is not
+    observed there): `retrain.yml` sets no tracking URI and has no seeding step, and `pdm flow` passes
+    no `tracking_uri`, so it falls back to a fresh runner-local SQLite registry with **no
+    incumbent**, where `registry.promote` takes the "first production version (no incumbent to beat)"
+    branch. **Measured locally:** running the loop on an empty registry with `min_delta=-1.0` (the
+    impossible bar) → `promoted=True`. The `retrain.yml` comment ("a worse retrain is held (the loop
+    cannot auto-degrade)") does not hold in that context, and the README tagline lists `→ cloud` as
+    part of a closed spine. Fix: repair the install; seed a fixture-trained incumbent at job start
+    (as ADR-014 already does for the demo image) or report "no incumbent" as a bootstrap state, not
+    a pass; reword the comment to "demonstrates execution, not governance".
+  - **T10-1 — inside the loop, the gate compares metrics from different evaluation sets.**
+    By reading: `retrain_task` calls `train.train(readings=current)`, which splits the drifted data
+    and logs the winner's AUC on that split, and `registry.promote` reads the incumbent's AUC as
+    logged when it trained; no step in the flow re-scores the incumbent. **Measured by probe**
+    (fixture, `seed=0`, +25 on the four thermal columns): the gate compared **0.7181** (candidate)
+    against **0.7041**, which is exactly the incumbent's train-time logged value, and promoted; the
+    same incumbent re-scored on the drifted test split scores **0.5081**. The direction was right
+    here by margin, not by construction. Fix: champion/challenger — score both models on the same
+    fresh holdout at decision time.
+  - **T10-3 — the suite cannot tell a healthy loop from a dead one.**
+    `test_drift_triggers_retrain_and_promotes` accepts both `promoted` and `held` (`if/else`).
+    **Measured by mutation:** hard-wiring `min_delta=-1.0` inside `promote_task`, so the loop can
+    never promote → **9 passed**. Fix: a test with a deterministically better candidate that must be
+    promoted.
+  - **T10-4 — the "one noisy column does not fire" promise and the threshold boundary are
+    untested.** **Measured by mutation:** `DRIFT_SHARE_THRESHOLD` 1/3 → 1/9 → **9 passed**; `>=` →
+    `>` in `_distil` → **9 passed**. The suite only exercises 0/9 and 4/9 drifted columns. The
+    boundary is reachable: `3 / 9 == 1.0 / 3.0` is `True` in floating point, and ADR-013 justifies
+    ⅓ with a ~3–4-signal physical cluster. Fix: tests at 1/9 and 2/9 (stable) and 3/9 (drift).
+  - **T10-5 — stale public numbers for F5.** This file states `DRIFT_SHARE_THRESHOLD` as **0.5** in
+    three places (L505, and L1001 + L1009 in the F5 entry under "Done"), none pointing at the
+    ADR-013 follow-up that moved it to ⅓ — even though L369–372 records that move; ADR-013 Consequences says "`test_monitor.py` (6) + `test_flows.py` (5)" and this file
+    "121 total (110 + 11)". **Measured:** the two files collect and pass **9** tests (5 + 4). Fix: a
+    dated addendum on both.
+  - **T10-6 — two smaller claims that do not match what runs.** (a) `retries=1` on
+    `retrain_task`, which registers a model version: a failure after `register_model` followed by a
+    retry would register a second, orphan version — argued from the code, **not reproduced**. (b)
+    The flow docstring and ADR-013 say the flow runs "in-process ... with no server"; under Prefect
+    3.7.6 the test output logs `Stopping temporary server on http://127.0.0.1:…` — Prefect 3 starts
+    a temporary local API server per run. Nothing to provision, but "no server" is literally false.
 
 
 ## Notes
