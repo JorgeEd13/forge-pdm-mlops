@@ -1898,6 +1898,54 @@ different STATE lines.
     `upload.HIGH_RISK_THRESHOLD` (both 0.5) by hand, with no test. Changing the stride would make the
     report's "1-hour" wording and the cap's row arithmetic wrong with nothing going red. Fix: derive
     both from `RESOLUTION` (or a single `pd.Timedelta`), and share one high-risk threshold constant.
+- **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T13`, generation persistence — SQLite vs
+  Neon):** four findings over `src/pdm_mlops/store_gen.py` and `src/pdm_mlops/store_pg.py`, **none
+  fixed** — the study programme documents, it does not repair. Measurement baseline:
+  `python -m pytest -q tests/test_generate.py tests/test_store_pg.py tests/test_generate_api.py` →
+  **44 passed**, ~52 s (notebook, Python 3.14.4, SQLAlchemy 2.0.51, psycopg 3.3.4, pandas 2.3.3). The
+  same `tests/test_generate.py tests/test_store_pg.py` redirected to a throwaway `postgres:16-alpine`
+  container (a pytest plugin monkeypatching `open_store`/`open_log` to the Postgres URL, tables dropped
+  per test) → **33 passed**. Five mutation points were run on SQLite, **two came back green**; `src/`
+  was restored after each and `git status --porcelain` was clean at the end. The claims below were
+  re-run by a blind claim audit (14 checked: 10 verified, 1 overstated and narrowed here, 2 only
+  decidable by reading, 1 narrowed in wording).
+  - **T13-1 — CI proves the stores on SQLite only, and three constraints exist only on Postgres.**
+    **Measured:** replacing the NaN→`None` coercion in `_as_float_or_none` with `return f` → **44
+    passed on SQLite**, **7 failed on Postgres 16** (`invalid input syntax for type json`). A direct
+    probe: a 60-char `unit_id` (`String(48)`) and a 70-char `model_version` (`String(64)`) are stored
+    by SQLite and rejected by Postgres (`value too long for type character varying`). Nothing breaks
+    today, but no test pins the coercion (the whole local suite, `python -m pytest -q`, stays at
+    **205 passed** on SQLite with it removed; `ci.yml` has no Postgres service), so a "simplifying" change would pass CI and fail every
+    generation run whose readings contain era-NULL. Fix: a direct unit test on `_as_float_or_none(nan)`;
+    a Postgres service job in CI for the `[cloud]` tests.
+  - **T13-2 — the run lifecycle is enforced by call order, not by the store.** **Measured on both
+    backends:** `mark_running` on a `succeeded` run sets it back to `running`; `mark_succeeded` on a
+    `failed` run sets `succeeded` and keeps the old `error`; `mark_running` on a non-existent `run_id`
+    raises nothing. `_update_run` filters on `run_id` only and discards the rowcount. Harmless while
+    each run gets exactly one job execution; not checked whether the platform can re-execute one. Fix:
+    compare-and-set transitions (`WHERE status = <expected>`), rowcount 0 surfaced.
+  - **T13-3 — a run stuck in `running` is never closed, and retention compensates by evicting finished
+    runs.** **Measured on both backends:** one `running` run holding 50 readings, budget 10 → `prune`
+    evicts the only terminal run and returns with the total still at **50**; the stuck run stays
+    `running`. `worker.execute_run` marks `failed` only from its `except`, which does not run when the
+    process is killed from outside (OOM, Job timeout) — the API marks `failed` only when the trigger
+    call itself fails; no stale-run handling was found in `serve.py` or
+    `jobs.py`. Consequence: the poll never ends, the stuck readings are never reclaimed, and every later
+    prune evicts innocent terminal runs. Fix: a reaper that fails runs `running` longer than the Job
+    timeout (or a heartbeat lease).
+  - **T13-4 — two honesty limits with no test: error truncation and `open_store`'s `None`.**
+    **Measured:** dropping the `[:500]` in `mark_failed` → **44 passed**. By reading: `open_store`
+    returns `None` on any exception while opening (bad URL, missing `psycopg`, unreachable database),
+    but the module docstring calls the graceful case "the absence of a database entirely" and the
+    `open_store` docstring promises a 503 that says generation needs a database — misleading when one is
+    configured. Same class as ADR-016 bug 1; `store_pg.open_log` at least documents its broad catch.
+    Fix: a test with a >500-char error; log the opening exception and distinguish "not configured" from
+    "configured but broken".
+  - Leads not pursued, each confirmed once by the claim audit but not studied: `prune` subtracts
+    `runs.n_rows`, which is 0 for a `failed` run that may still hold readings (a failed run with 30
+    readings plus a succeeded one with 30, `prune(40)` → both evicted, total 0); `generation_units` has
+    no `UNIQUE (run_id, model_version, unit_id)` — Postgres accepts duplicate rows, so concurrent
+    `save_report` calls are not stopped by the database; `store_pg._clean_readings` passes NaN through.
 - **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T11`, bring-your-own-data upload + fuzzy
   mapping):** five findings over `src/pdm_mlops/upload.py`, `src/pdm_mlops/serve.py` (`/demo/upload`)
   and `tests/test_upload.py`, **none fixed** — the study programme documents, it does not repair.
