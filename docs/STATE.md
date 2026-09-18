@@ -1861,6 +1861,43 @@ different STATE lines.
     can go wrong and none where something can. Fix: a row-count check in `_score_frame`; and either
     delete the non-firing guards or move one to the boundary where a leaky column could actually
     enter.
+- **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T12`, generation caps + sustained-risk
+  roll-up):** four findings over `src/pdm_mlops/generate.py` and `tests/test_generate.py`, **none
+  fixed** — the study programme documents, it does not repair. Measurement baseline:
+  `python -m pytest tests/test_generate.py tests/test_generate_api.py -q` → **36 passed** (25 + 11, no
+  skips — the forge was installed), ~53 s (notebook, Python 3.14.4, numpy 2.0.2, pandas 2.3.3). Four
+  mutation points were run and **three came back green**; the claims below were re-run by a blind
+  claim audit (13 checked, 11 verified, 2 narrowed and corrected here); `src/` was restored after each and
+  `git status --porcelain src` was clean at the end.
+  - **T12-1 — the "ignore a lone spike" rule does not ignore a spike on a vehicle's first reading.**
+    `roll_up` uses `rolling(ROLLUP_WINDOW_ROWS, min_periods=1)`, so the first window is a single row —
+    the max the rule exists to avoid. **Measured** (288 rows at 0.05, one reading at 1.0): spike at
+    position 0 → risk **1.000, flagged**; position 1 → 0.525; position 5 → 0.208; position 11 and later
+    → 0.129. `test_roll_up_ignores_a_lone_spike_but_catches_a_sustained_run` places the spike at
+    position 30. Not measured: how often the real forge injects an outlier on a unit's first reading.
+    Fix: require a full window (`min_periods=ROLLUP_WINDOW_ROWS`) and handle series shorter than the
+    window explicitly; add an edge-position spike to the test.
+  - **T12-2 — the measured cap and flag threshold are not pinned by any test.** **Measured by
+    mutation:** `MAX_UNIT_DAYS` 200 → 239 → **36 passed** (a full run grows from 57,600 to 68,832 rows,
+    ~29.7 MB at the ADR's ~432 B/row, while the comment still says ~25 MB); `FLAG_THRESHOLD` 0.70 →
+    0.15 → **36 passed** (the only test asserting a `flagged` value accepts any threshold in (1.55/12 ≈ 0.1292, 0.8]). The storage
+    assertion `biggest * 5 <= MAX_TOTAL_STORED_ROWS * 2` stays green up to 277 unit-days, and the
+    retention budget holds ~3.5 full runs, not the "handful" its comment says. Fix: derive the cap test
+    from the bytes-per-row arithmetic; add a fixture whose sustained risk straddles 0.70.
+  - **T12-3 — the re-sort inside `roll_up` is untested.** **Measured:** replacing
+    `scored = scored.sort_values(["unit_id", "t_index"])` with `pass` → **36 passed**; with that mutation,
+    a 288-row unit with 20 consecutive readings at 0.8, passed in shuffled order, scores risk **0.238**
+    and is not flagged (unmutated: **0.800**, flagged). Harmless today — the only live caller, the report endpoint in
+    `serve.py`, reads from the store, whose query is `ORDER BY unit_id, t_index` — but the next caller that does not would silently hide a degrading vehicle.
+    The `run_generation` docstring says order is "established once, here, at the source, rather than
+    trusted downstream"; the code does both. Fix: a shuffled-input roll-up test.
+  - **T12-4 — window length and row arithmetic are literals detached from the sampling stride.** By
+    reading, not measured: `ROLLUP_WINDOW_ROWS = 12` and `ROWS_PER_UNIT_DAY = 288` are not derived from
+    `RESOLUTION = "5min"`; `ROLLUP_WINDOW_H = 1.0` feeds only the report text (`serve.py`, "peak of a
+    1-hour rolling mean"), not the computation. `HIGH_RISK_ROW_THRESHOLD` is "kept identical" to
+    `upload.HIGH_RISK_THRESHOLD` (both 0.5) by hand, with no test. Changing the stride would make the
+    report's "1-hour" wording and the cap's row arithmetic wrong with nothing going red. Fix: derive
+    both from `RESOLUTION` (or a single `pd.Timedelta`), and share one high-risk threshold constant.
 - **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T11`, bring-your-own-data upload + fuzzy
   mapping):** five findings over `src/pdm_mlops/upload.py`, `src/pdm_mlops/serve.py` (`/demo/upload`)
   and `tests/test_upload.py`, **none fixed** — the study programme documents, it does not repair.
