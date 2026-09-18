@@ -1946,6 +1946,56 @@ different STATE lines.
     readings plus a succeeded one with 30, `prune(40)` → both evicted, total 0); `generation_units` has
     no `UNIQUE (run_id, model_version, unit_id)` — Postgres accepts duplicate rows, so concurrent
     `save_report` calls are not stopped by the database; `store_pg._clean_readings` passes NaN through.
+- **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T14`, the web/worker boundary —
+  enqueue, don't generate):** four findings over `src/pdm_mlops/serve.py` L605–781,
+  `src/pdm_mlops/jobs.py` and `src/pdm_mlops/worker.py`, **none fixed** — the study programme
+  documents, it does not repair. Measurement baseline:
+  `python -m pytest -q -p no:warnings tests/test_generate_api.py tests/test_generate.py` → **36
+  passed**, ~53 s (notebook, Python 3.14.4, FastAPI 0.136.3, Starlette 1.2.1, SQLAlchemy 2.0.51). Five
+  mutation points were run, **two came back green**; `src/` was restored after each and
+  `git status --porcelain` was clean at the end. The claims below were re-run by a blind
+  claim audit (15 checked: 12 verified, 1 false and 1 overstated — both corrected here —, 1 only
+  decidable by reading). What held: running `worker.execute_run` through FastAPI
+  `BackgroundTasks` → 4 failed with the trigger call kept, 5 failed with it replaced, and in both
+  `test_the_api_never_generates_in_process` fails with its own message; dropping `mark_failed` on a trigger error → 1 failed; dropping it in the worker's `except`
+  → 2 failed.
+  - **T14-1 — the configured job retry makes the worker non-idempotent.** `terraform/main.tf` gives
+    the job `max_retries = 1`; `worker.main` exits 1 on any exception, including one from
+    `store.prune`, which runs *after* `mark_succeeded` and outside the `try`. **Measured** by running
+    `execute_run` twice on one run (what a retry does): `prune` failing on the first attempt → after
+    the second, status `succeeded`, `n_rows 120`, `count_readings` **240** (readings appended twice).
+    A generator failure on the first attempt and success on the second → `failed` becomes `succeeded`
+    with the old `error` still set. The cloud retry itself was not exercised (config read, Cloud Run
+    Jobs semantics per its docs). Related: T13-2. Fix: compare-and-set start (`WHERE status =
+    'queued'`), delete-before-insert of the run's readings, housekeeping that cannot fail the exit
+    code; `max_retries = 0` until then.
+  - **T14-2 — "crash-honest" covers the failures the worker catches; some paths leave a run `queued`
+    forever.** **Measured:** `GENERATION_UNITS=four` → `worker.main` raises `ValueError` before any
+    `try` and the run stays `queued` (not reachable through the API today, which sends `str(int)`);
+    `CloudRunJobTrigger.trigger` against a server that accepts and never answers raises
+    **`TimeoutError`**, which is not a `URLError` and so is not converted to `TriggerError` —
+    `demo_generate` catches only `TriggerError`, so the client gets a 500, the run is not marked, and
+    the job may in fact have started. By reading: `mark_running` is also outside the `try`, and a
+    triggered job that never starts leaves the run `queued`; no stale-`queued` handling exists (T13-3
+    covers `running`). Fix: convert every trigger exception at the endpoint; a reaper for `queued`
+    and `running`.
+  - **T14-3 — the configuration that picks the topology has no test.** **Measured:**
+    `open_trigger` changed to always return `LocalProcessTrigger()` (the silent fallback its
+    docstring rules out) → **36 passed**; `_require_generation` changed from `or` to `and` → **36
+    passed**, and with a store but no trigger `POST /demo/generate` → **500** with an orphan `queued`
+    run. No test under `tests/` references `open_trigger`, `CloudRunJobTrigger` or
+    `LocalProcessTrigger`; every test injects the trigger. Fix: tests for `open_trigger`'s three
+    branches and for each half missing alone.
+  - **T14-4 — the API/worker env-var contract is written twice.** By reading: `jobs.py` sends
+    `RUN_ID`/`GENERATION_UNITS`/`GENERATION_DAYS`/`GENERATION_SEED` as string literals; `worker.py`
+    defines the same names as constants that `jobs.py` does not import; no test calls
+    `CloudRunJobTrigger.trigger`. Probed (claim audit): renaming `GENERATION_UNITS` on the worker side
+    only → exit 0 with the default unit count — a different fleet than requested, with no error;
+    renaming `RUN_ID` on one side fails loudly (exit 2). Fix: import the constants; one
+    test asserting the override body.
+  - Leads not pursued: `LocalProcessTrigger` sends the child's stdout/stderr to `DEVNULL`, so a
+    local worker that dies at import leaves no trace; `GET /demo/generate/{id}` reports the
+    *current* trigger's name, not the one that started the run.
 - **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T11`, bring-your-own-data upload + fuzzy
   mapping):** five findings over `src/pdm_mlops/upload.py`, `src/pdm_mlops/serve.py` (`/demo/upload`)
   and `tests/test_upload.py`, **none fixed** — the study programme documents, it does not repair.
