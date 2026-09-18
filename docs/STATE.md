@@ -1861,6 +1861,56 @@ different STATE lines.
     can go wrong and none where something can. Fix: a row-count check in `_score_frame`; and either
     delete the non-firing guards or move one to the boundary where a leaky column could actually
     enter.
+- **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-T11`, bring-your-own-data upload + fuzzy
+  mapping):** five findings over `src/pdm_mlops/upload.py`, `src/pdm_mlops/serve.py` (`/demo/upload`)
+  and `tests/test_upload.py`, **none fixed** — the study programme documents, it does not repair.
+  Measurement baseline: `python -m pytest tests/test_upload.py -q` → **25 passed**, ~79 s (notebook,
+  pandas 2.3.3, Starlette 1.2.1). Five mutation points were run and **two came back green**; `src/`
+  was restored after each round and `git status --porcelain src` was clean at the end.
+  - **T11-2 🔴 URGENT — the row cap runs after the parse, and Parquet compresses: a decompression bomb
+    reachable on the live endpoint.** **Measured:** a one-column Parquet with **5,000,000** zero rows is
+    **~22 KB** (22,383–22,567 bytes across two measurements); `parse_upload` rejects it ("too many
+    rows") only after materializing it, at **~+96 MB** peak RSS (three fresh-process runs).
+    Extrapolated, not run: at that ratio, hundreds of millions of rows fit under the 2 MB cap. The
+    route has no auth in the app, and the README links the live `/demo` as the public demo (platform
+    access settings not checked). By reading (Starlette 1.2.1 `formparsers.py`):
+    `max_part_size` applies to form fields, not file parts, so the whole file is spooled before the
+    handler — `file.read(MAX_UPLOAD_BYTES + 1)` bounds what the code reads, not what the server
+    receives. The instance memory limit was not checked. The comment at `upload.py` L47–49 ("a
+    hostile/huge upload can't exhaust memory") does not hold for Parquet. Fix: read
+    `num_rows` from the Parquet footer (`pyarrow.parquet.ParquetFile(...).metadata`) and `nrows=` for
+    CSV before materializing; cap the request body at the edge.
+  - **T11-1 — "every bad input is a 4xx, never a 500" has a one-line counterexample.** The endpoint
+    checks the mapping is a JSON object, not that its values are strings; `resolve_mapping` does
+    `src in header_set`, and an unhashable value raises `TypeError`, which is not `UploadError`.
+    **Measured** (TestClient, no promoted model — the error fires before scoring):
+    `{"engine_speed_rpm": ["x"]}` → **500**; `{"engine_speed_rpm": {"a": 1}}` → **500**;
+    `{"engine_speed_rpm": 5}` → 400. The claim is stated in the `upload.py` and endpoint docstrings and
+    in ADR-017. Fix: validate the mapping with a Pydantic model (`dict[str, str | None]`).
+  - **T11-3 — the fuzzy matcher matches spelling, not meaning.** **Measured** on
+    `["Vehicle Speed", "Oil Temp", "Fuel Level", "Ambient Temp"]`: suggested `engine_speed_rpm ←
+    Vehicle Speed`, `coolant_temp_c ← Oil Temp`, `fuel_rate_lph ← Fuel Level` — **3 suggestions, all
+    3 wrong** (`Fuel Level` scores exactly **0.6**, the threshold); `Ambient Temp` is left unmapped.
+    `unrelated_col` scores **0.609** against `fuel_rate_lph`; in the test it stays unmapped only
+    because `fuel` (0.95) claims that signal first. The synonym `n` gives any column named `N` a 0.95
+    engine-speed match (measured); by reading, `oilpsi` accepts a psi column into a kPa slot and no
+    unit is converted. The preview-confirmation step is the mitigation, but a wrong mapping still
+    scores with plausible numbers. Fix: show sample values beside each suggestion; drop `n`/`oil`/`oilpsi`
+    or flag unit-bearing synonyms.
+  - **T11-4 — the suite guards rejections, not happy-path correctness.** **Measured by mutation:**
+    replacing the global greedy assignment with per-signal first-come → **25 passed**, and that version
+    swaps oil and boost pressure when headers arrive as `["boost_pressure_kpa", "oil_pressure_kpa"]`
+    (cross score 0.8); `test_suggest_mapping_no_header_reused` lists them in the order any strategy
+    gets right. Dropping `.reset_index(drop=True)` in `build_frame` → **25 passed**, and a 2-row
+    Parquet with index `[10, 11]` becomes a 4-row frame (two all-NaN rows that still score). Relaxing
+    `_MATCH_THRESHOLD` 0.6 → 0.3 is caught by one test only. `test_suggest_mapping_fuzzy_and_synonyms`
+    asserts 5 of the 9 mappings (all 9 match, measured — ADR-017's "9/9" holds but is untested).
+    Fix: reversed-order assignment test, index-carrying Parquet test, assert all nine.
+  - **T11-5 — a semicolon CSV gets the wrong diagnosis.** **Measured:** `a;b\n1;2` (the pt-BR Excel
+    default) → **400** "no numeric columns found — this doesn't look like J1939 signal data": right
+    status, misleading message. By reading, not measured: decimal commas (`1,5`) coerce to NaN per
+    cell, and `assert_scorable` accepts the batch if any one mapped cell is numeric, so the lost rows
+    score as missing signals. Fix: sniff the delimiter (`csv.Sniffer`) and report NaN-coercion counts.
 - **Study backlog, queued 2026-09-10 (APROFUNDAMENTOS `R2-T10`, the closed loop that must not
   auto-degrade):** six findings over `src/pdm_mlops/monitor.py`, `src/pdm_mlops/flows.py`,
   `tests/test_monitor.py`, `tests/test_flows.py`, **none fixed** — the study programme documents, it
