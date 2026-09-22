@@ -2132,6 +2132,34 @@ different STATE lines.
     `>=` → `>` (no score lands exactly on 0.5); `sequence.py` `rolling(..., center=True)` (the
     future-peek test corrupts only the last row).
 
+- **Study backlog, queued 2026-09-18 (APROFUNDAMENTOS `R2-V2`, blind verification of the production
+  spine T8–T14):** two independent reviewers with no docs, each on its own copy of the tree (one on
+  `src/`, one on `tests/`). **None fixed.** Mutation score: code reviewer **3 of 8** green, test
+  reviewer **4 of 18** green (scoped suite baseline **103 passed, 0 skipped** with the `[generate]` extra installed; 101 passed, 2 skipped without it). Only findings **not
+  already queued** by `R2-T8`…`R2-T14` are listed; the rest re-confirmed existing items (T9-1 stale
+  model cache, T13-3 stuck `running` run, T14-1 re-execution appends readings twice, T13-1 SQLite-only
+  store tests, T8-4 / T8-5 / T10-4 untested guards — T8-4 found by both reviewers independently).
+  - **V2-1 🔴 URGENT — the upload endpoint blocks the event loop for every other request.**
+    `demo_upload` is `async def` (`serve.py:529`) but calls `parse_upload` / `suggest_mapping`
+    synchronously, so CPU work runs on the event loop. **Measured:** a wide-header CSV of 848,890
+    bytes → the upload answers 400 after **44.4 s**, and a concurrent `GET /` waits **43.4 s**; a
+    1.49 MB one took **114.6 s**. Re-run by a separate audit: a 120 KB header of 60,000 duplicate
+    columns → concurrent `GET /` waited **18.7 s**; the time is spent in `parse_upload` (pandas
+    renaming duplicate columns, super-linear) and depends on the header's content, not only its size. Reachable by an unauthenticated caller of the public demo. Fix:
+    plain `def` (FastAPI runs it in its threadpool) or `run_in_threadpool`, plus a column cap
+    before fuzzy matching.
+  - **V2-2 🔴 URGENT — `/demo/generate` has no cap on runs in flight.** Each POST creates a run and
+    triggers a worker (a Cloud Run Job execution in production). **Measured** with a fake trigger:
+    **100 POSTs → 100 × 202 and 100 trigger calls**, 0 runs evicted — `prune` exits early because
+    queued runs hold 0 readings, so the store never goes over its row budget. The row/storage caps bound the size of one job, not the number of jobs. Fix: reject
+    with 429 while N runs are `queued`/`running` (and/or a per-client rate limit).
+  - **V2-3 — `prune`'s `keep=` exemption has no test.** Deleting the `if run_id == keep: continue`
+    at `store_gen.py:398` leaves the scoped suite green (found by both reviewers independently), so
+    retention may evict the run the worker just finished without any test noticing. Fix: a test
+    where the kept run is the oldest terminal run over budget.
+  - **V2-4 — new number for T11-2 (Parquet row cap after the parse).** A **1,819,873-byte** Parquet
+    with **40,000,000** rows is rejected ("too many rows") only after peak RSS grows **246 → 6,484
+    MB**. Same fix as T11-2; the number is why it stays 🔴.
 
 ## Notes
 
