@@ -2161,6 +2161,59 @@ different STATE lines.
     with **40,000,000** rows is rejected ("too many rows") only after peak RSS grows **246 → 6,484
     MB**. Same fix as T11-2; the number is why it stays 🔴.
 
+- **Study backlog, queued 2026-09-28 (APROFUNDAMENTOS `R2-T15`, the `/demo` render):** five
+  findings over `src/pdm_mlops/serve.py` L782–1241 (`_SIGNAL_META`, `_PRESETS`,
+  `_render_demo_page`, `_DEMO_I18N`) and `tests/test_demo.py`, **none fixed** — the study programme
+  documents, it does not repair. Measurement baseline:
+  `python -m pytest -q -p no:warnings tests/test_demo.py` → **12 passed**, ~35 s (notebook, Python
+  3.14.4, numpy 2.5.3 in an isolated venv). Five mutation points were run, **three came back
+  green**; `src/` was restored after each and `git status --porcelain` was clean at the end. The
+  ADR-019 preset validation was re-run against a freshly baked demo model (fixture, `seed=0`, as
+  `scripts/seed_demo_registry.py`): **healthy 0.04 % · overheat 99.20 % · oil_starve 99.13 % ·
+  bearing 99.73 %** — it reproduces; the findings are about what protects it, not its current state.
+  A blind claim audit re-ran these
+  claims (17 checked: 13 verified, 2 overstated — both narrowed here —, 2 decidable only by reading or
+  a browser). What held: narrowing `vibration_mms` max 30 → 15 → 1 failed
+  (`test_signal_ranges_bracket_every_preset_value`); a preset value off the step grid (20.25 on
+  step 0.1) → 1 failed (`test_preset_values_align_to_signal_step`).
+  - **T15-1 — the presets' validation against the model is an ADR measurement, not a test.**
+    **Measured:** the `bearing` preset's `vibration_mms` 20.2 → 4 (in range, on the step grid) →
+    **12 passed**, and the baked model scores it **0.15 %** — the "presets read ~0 %" defect that
+    ADR-019 fixed, back with a green suite. No test scores `_PRESETS` through the model. Fix: a test
+    reusing `_train_and_promote` that asserts `healthy` lands in the UI's low band and each failure
+    preset in its high band (needs T15-5's bands in Python).
+  - **T15-2 — the preset keys are written twice, and the test accepts the orphaned button.**
+    `_PRESETS` and the four hardcoded `<button data-preset=…>` in `_DEMO_TEMPLATE` share no owner.
+    **Measured:** deleting `overheat` from `_PRESETS` and keeping its button → **12 passed**;
+    `"overheat" in page` stays true without the preset — the button attribute and the coolant
+    tooltip ("…signals overheating") both carry the word. By reading, `fillPreset` returns early on
+    a missing preset, so the click is a silent no-op. Fix: build the buttons from `PRESETS` in the JS,
+    or a test comparing `set(_PRESETS)` with the rendered `data-preset` values.
+  - **T15-3 — two page assertions don't discriminate the state they name.** `"off" in page.lower()`
+    ("with no DB the page says logging is off") and `"i18nNote" in page` are satisfied by the i18n
+    JSON injected on every render. **Measured:** with no database, forcing
+    `recent_note_key = "loggingOn"` (the page then claims it logs to Postgres) → **12 passed**; and
+    `_render_demo_page([], persistence=True)` also contains `"off"`. Fix: assert on the rendered
+    `data-i18n="loggingOff"` / `"loggingOn"` attribute, not on a substring.
+  - **T15-4 — two comments describe sliders that clamp; the code has neither.** By reading: the
+    `_SIGNAL_META` comment says "slider", but the JS renders `<input type="number">` (no
+    `type="range"` in the file); the `test_signal_ranges_bracket_every_preset_value` comment says an
+    out-of-range preset "would silently clamp — the exact bug that made presets read ~0%", but a
+    number input does not clamp (per the HTML spec the field becomes invalid and, with no
+    `novalidate` on `<form id="f">`, submission is blocked — not run in a browser), and ADR-019
+    names the single-mode fixture as the root cause of the ~0 % (the range widening it also shipped
+    is a secondary fix). The comment makes T15-1 look covered. Fix:
+    correct both comments.
+  - **T15-5 — "high risk" has two cutoffs and two owners on the same page.** By reading: the
+    single-reading meter bands are `0.33` / `0.66`, hardcoded in the page JS; the fleet report flags
+    at `generate.FLAG_THRESHOLD = 0.70`. A 0.68 reading is "high risk" on the meter; a vehicle at a
+    0.68 sustained risk is "ok". No Python test can reach the JS bands. Fix: define the bands in
+    Python and inject them like `gen_caps` (and say on the page why the two cutoffs differ, if they
+    should).
+  - Leads not pursued: `_DEMO_SEED` is defined and never read (the JS seeds from `PRESETS.healthy`);
+    EN/PT-BR key parity holds today but is untested, and `t()` silently falls back to English; no
+    test covers `html.escape` on `model_version` in the recent-predictions table.
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
