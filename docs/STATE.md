@@ -2256,6 +2256,41 @@ different STATE lines.
     surfaces as a parse error and a list-shaped 422 `detail` as `[object Object]`; `renderFleet`
     doesn't check `ok` on its two fetches; `initialLang` accepts inherited keys (`constructor`) of the
     `I18N` object; `<title>` is not localized; the theme is stamped only after parse (possible flash).
+- **Study backlog, queued 2026-09-28 (APROFUNDAMENTOS `R2-T17`, the multi-mode fixture and the baked
+  demo registry):** four findings over `scripts/build_sample.py`, `scripts/seed_demo_registry.py` and
+  `tests/test_seed_demo_registry.py`, **none fixed**. Measurement baseline:
+  `pytest -q tests/test_seed_demo_registry.py tests/test_skeleton.py` → **8 passed**, ~42 s, in an
+  isolated venv (Python 3.14.4, numpy 2.5.3, pandas 2.3.3); the workspace venv (numpy 2.0.2 on 3.14)
+  was avoided. Scripts and fixture restored with `git checkout` after each mutation; `git status` clean.
+  - **T17-1 — the committed fixture's failure-mode coverage has no CI guard.** No test imports
+    `build_sample.py`, so its two fail-loud checks (L121, L180) run only on regeneration. **Measured:**
+    rewriting `data/sample_readings.parquet` with only the `oil_starve` and healthy units → **8 passed**
+    on the bake tests, and **168 passed, 4 failed** across the 18 test files that read the fixture (`grep -lE 'SAMPLE_READINGS|sample_readings|load_readings|readings\(\)' tests/*.py`);
+    the 4 are `tests/test_flows.py`, which fail identically on the unmutated fixture in this venv.
+    `test_decompose_covers_horizon_and_modes` doesn't catch it because it compares the decomposed modes
+    with the modes present in the same data. This is the exact ADR-019 regression. Fix: a test that
+    reads the committed parquet and asserts positive rows for all three modes.
+  - **T17-2 — the `DEMO_SEED` rationale is stale.** `seed_demo_registry.py` L46–49 and ADR-014 ("42 is
+    not") say seed 42 gives a single-class split on the fixture — true of the old single-mode fixture.
+    **Measured:** a full bake at seed 42 promotes v1 with held-out ROC-AUC **0.7821** (380 positives
+    in test). ADR-019 already notes the new fixture is class-rich at every seed. Fix: past-tense
+    comment + dated addendum on ADR-014.
+  - **T17-3 — `build_sample.py` writes the parquet (L173) before the final mode check (L177–180)**, so
+    a failing build has already overwritten the good fixture. By reading only; practically unreachable
+    with 8 units per mode. Fix: check, then write.
+  - **T17-4 — `--skip-if-promoted` and the `provenance` tag are untested.** **Measured:**
+    `_already_promoted` → `return True`, and deleting the `provenance` tag call → **8 passed** each.
+    `scripts/hf_entrypoint.sh` passes the flag on every boot, so a broken `True` would skip the bake on
+    an empty store and serve with no model. Fix: empty store → `False`, baked store → `True`, assert
+    the tag. (Removing the explicit `artifact_location` *is* caught: `test_store_is_self_contained`
+    fails, and the model artifacts land in the repo-root `mlruns/`.)
+  - Measured context, not a defect: the fixture is stratified by mode but the unit-grouped split isn't —
+    at `DEMO_SEED=0` the test set holds 4 overheat / 1 oil_starve / 1 bearing units (held-out AUC 0.7041
+    overall), and at seed 42 it holds no overheat unit.
+  - Leads not pursued (by reading only): missing columns in `build_sample` only `print` and exit 0
+    (L140–141); the "byte-identical fixture" claim (L25) has no check; the L89 comment says the run is
+    tagged, the code tags only the version; `warnings.simplefilter("ignore")` (seed L140) silences every
+    warning, not just the fixture one.
 
 ## Notes
 
