@@ -2213,6 +2213,49 @@ different STATE lines.
   - Leads not pursued: `_DEMO_SEED` is defined and never read (the JS seeds from `PRESETS.healthy`);
     EN/PT-BR key parity holds today but is untested, and `t()` silently falls back to English; no
     test covers `html.escape` on `model_version` in the recent-predictions table.
+- **Study backlog, queued 2026-09-28 (APROFUNDAMENTOS `R2-T16`, the `/demo` template):** five
+  findings over `src/pdm_mlops/serve.py` L1242–1778 (`_DEMO_TEMPLATE`, the inline HTML/CSS/JS),
+  **none fixed** — the study programme documents, it does not repair. Measurement baseline:
+  `python3 -m pytest -q tests/test_demo.py tests/test_upload.py` → **37 passed**, ~107 s (notebook,
+  workspace venv, Python 3.14). No test in the repo executes JavaScript, so the page was driven by a
+  throwaway instrument outside the repo: Playwright + the installed Chrome (headless), rendering the
+  real page from `_render_demo_page([], persistence=False, generation=True)` with the backend stubbed
+  by route interception. `src/` was restored after each mutation and `git status` was clean at the end.
+  - **T16-1 — 🔴 URGENT: the live `/demo` cannot score, upload or generate.** `applyLang()` (L1515)
+    calls `buildGenFields()` (L1462), which reads `const GEN_FIELDS` declared at L1668 — a temporal
+    dead zone `ReferenceError` on load, which aborts the rest of the script before the submit /
+    upload / generate handlers (L1521, L1564, L1691) are attached. **Measured** on both live URLs
+    (Cloud Run, the README link, and the HF Space), with `POST /demo/predict` aborted at the network
+    layer so nothing was written: page error *"Cannot access 'GEN_FIELDS' before initialization"*,
+    `data-theme` unset, empty theme button, 0 generation inputs, and clicking Predict fires a native
+    **`GET /demo?…`** instead of `POST /demo/predict`. The page still renders fully (translations and
+    the 9 fields run before the throw). Moving the `applyLang()` call to the end of the script — in
+    the instrument only — gives 0 page errors, the POST, and the rendered meter. The `const` landed in
+    `7620b91` (2026-07-14, F14a) per `git log -S`; that revision was not re-run. README L22 (linked from the
+    L10 badge) advertises scoring, upload and fleet generation today. **37 passed.** Fix: call `applyLang()` last
+    (or wrap setup in an `init()` called at the end), then T16-3.
+  - **T16-2 — the theme and language "overrides" are a snapshot of the first visit.** `applyTheme`
+    (L1438) and `applyLang` (L1453) write `localStorage` on every call, including the one on load.
+    **Measured** (T16-1 bypassed in the instrument): visit 1 with a light OS and `en-US` stores
+    `theme=light`, `lang=en` with no click; visit 2, same storage, dark OS and `pt-BR` → the page
+    stays light and English. ADR-018 calls it an override. Fix: persist only in the click handlers.
+  - **T16-3 — the template has no test oracle.** Page assertions are substring checks
+    (`tests/test_demo.py` L117–122). **Measured:** with `esc` narrowed to `/[&<>]/` (no `"`), a CSV
+    header containing a quote injects `autofocus` and `onfocus` attributes into the mapping
+    `<option>`; with the high-risk band raised 0.66 → 0.9, a 0.70 probability reads "moderate risk";
+    with `</script>` in one i18n string, the page is blank. **37 passed** for each. This is what let
+    T16-1 ship. Fix: one Playwright test (backend stubbed) asserting zero page errors and a
+    `POST /demo/predict` on Predict; needs Chrome in CI.
+  - **T16-4 — `json.dumps` output goes into `<script>` with `</` unescaped** (L1420–1425). Latent,
+    not live: all six injected blobs are code constants today. Measured in T16-3 (one `</script>` in a
+    translation blanks the page). Fix: `.replace("</", "<\\/")` on each blob.
+  - **T16-5 — the meter's risk bands and colours are JS literals** (`0.33`/`0.66`, three fixed hex
+    colours, L1539–1541): unreachable from Python tests (T16-3) and not theme tokens. Joins T15-5.
+  - Leads not pursued (by reading only): `data.model_version` goes into `innerHTML` unescaped
+    (L1545); upload/generate call `resp.json()` before checking `resp.ok`, so a non-JSON error body
+    surfaces as a parse error and a list-shaped 422 `detail` as `[object Object]`; `renderFleet`
+    doesn't check `ok` on its two fetches; `initialLang` accepts inherited keys (`constructor`) of the
+    `I18N` object; `<title>` is not localized; the theme is stamped only after parse (possible flash).
 
 ## Notes
 
