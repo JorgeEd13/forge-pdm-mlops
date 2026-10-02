@@ -2292,6 +2292,58 @@ different STATE lines.
     tagged, the code tags only the version; `warnings.simplefilter("ignore")` (seed L140) silences every
     warning, not just the fixture one.
 
+- **Study backlog, queued 2026-10-02 (APROFUNDAMENTOS `R2-T18`, the CLI surface and the config):**
+  six findings over `src/pdm_mlops/cli.py`, `src/pdm_mlops/config.py`, `tests/test_skeleton.py` and
+  `configs/dataset.json`, **none fixed**. Baselines: `tests/test_skeleton.py` +
+  `test_the_dataset_config_is_resolvable_when_the_package_is_INSTALLED` → **5 passed**;
+  `tests/test_monitor.py` → **5 passed**. M3/M4 were repeated in an isolated venv (numpy 2.5.3,
+  pandas 2.3.3) with the same outcome; the rest ran in the workspace venv (numpy 2.0.2, no large
+  arrays involved). Code restored with `git checkout` after each mutation; `git status` clean.
+  - **T18-1 — `test_every_subcommand_is_wired` cannot fail.** It calls `main([cmd, "--help"])`;
+    argparse handles `--help` inside `parse_args` and exits before dispatch, so the `_not_yet`
+    sentinel can never print. **Measured:** inserting `return _not_yet("F2")` at the top of the
+    `train` branch → **5 passed**, while `main(["train"])` returns 2. The only tests that call the
+    CLI are the two in `test_skeleton.py`; CI runs only `pdm --version`. Also: `_not_yet` has no
+    caller, the module docstring (L17–18) still describes stubs, and the fallback
+    `print_help(); return 0` (L328) would exit 0 for a declared subcommand with no branch. Fix:
+    dispatch for real with the target monkeypatched, or `set_defaults(func=...)` per subparser plus
+    an assert that every subparser has a `func`.
+  - **T18-2 — `generate-run` drops the env overrides for omitted fields once any flag is passed.**
+    **Measured:** env `GENERATION_UNITS=9 GENERATION_DAYS=14 GENERATION_SEED=7` +
+    `generate-run --run-id x --units 5` → `GenerationSpec(n_units=5, days=7, seed=42)`. The L319
+    comment says omitted values fall back to the env. The seed fallback is a literal `42` in both
+    `cli.py` L325 and `worker.py` L78 rather than `config.DEFAULT_SEED`. Fix: resolve each field once
+    (flag → env → default) in one place.
+  - **T18-3 — a `DATASET_CONFIG` pointing at a missing file silently falls through.** **Measured:**
+    `DATASET_CONFIG=/tmp/definitely-missing.json` → `dataset_config_path()` returns the source-tree
+    `configs/dataset.json`, no error. The existing test covers "valid override" and "all three
+    candidates missing", not this. Fix: if the env var is set and the file doesn't exist, raise. Also:
+    `data.load_readings` (L64) reads `config.DATASET_CONFIG` directly instead of
+    `dataset_config_path()`, and `scripts/build_sample.py` (L38) has its own path literal.
+  - **T18-4 — unknown keys in `dataset.json` are dropped silently.** The generator's
+    `config_from_dict` keeps only its six known top-level keys (plus `fleet`, `anomaly_rates` and
+    `season`, which it handles separately) and ignores the rest (that is also why `_comment` works).
+    **Measured:** `"failure_horizon_h": 168.0` → `"failure_horizon_hours": 72.0` → `test_skeleton.py`
+    + `test_generate.py` + `test_data.py` **34 passed** (same as baseline); the loaded horizon is
+    **168.0**. Also measured: `seed`, `days` and `failure_horizon_h` in the file equal the
+    generator's defaults; only `resolution` (`5min` vs default `1min`) changes anything today, so
+    deleting any of the other three is invisible too. The horizon defines the training label. Fix:
+    reject keys that are neither known nor prefixed with `_` (here or in the generator).
+  - **T18-5 — `x or default` swallows zero for `--window` and `--trials`.** **Measured:**
+    `ceiling --window 0` → window 24. `--epochs`/`--channels`/`--min-delta` use `is not None`. Fix:
+    reject invalid values instead of substituting the default.
+  - **T18-6 — `DRIFT_SHARE_THRESHOLD` is guarded against tightening, not loosening.** **Measured:**
+    `0.5` → **2 failed** (the test's shifted frame — a synthetic +25 on 4 columns, not the generator's
+    `heatwave` season — drifts 4/9 = 0.44); `0.1`, i.e. "any one of 9
+    features", the policy ADR-013 rejects → **5 passed**. Fix: a test where 1 of 9 columns drifts
+    and `drifted` must be `False`.
+  - Leads not pursued (by reading only): `pdm monitor` exits 1 on "no drift" without the comment
+    `flow` has; `.github/workflows/retrain.yml` runs `pdm flow`, which exits 1 on a stable cycle
+    (not checked whether the workflow handles it); the CLI calls the private `_registry._client()`;
+    help texts restate defaults ("default 40/24/8") with nothing checking them; `train` exits 0 even
+    when it registers nothing; `default_tracking_uri()` creates a directory; the "byte-identical
+    data" claim (`config.py` L23) has no check in this territory.
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
