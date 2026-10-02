@@ -2386,6 +2386,64 @@ different STATE lines.
     the new service accounts outside Terraform; the import pins secret version 4 while both
     containers read `latest`; `max_instance_count = 20` has no written link to the $0 budget.
 
+- **Study backlog, queued 2026-10-02 (APROFUNDAMENTOS `R2-T20`, the three images and the deploy
+  scripts):** seven findings, **none fixed**. Measured offline on `mktemp -d` / `git archive` copies
+  (gcloud 575.0.0 `meta list-files-for-upload`, which is local; Docker 29.8.2; MLflow 3.14.0); the
+  repo was not touched. Two read-only probes went outside: `curl` on the two public endpoints, and
+  one `gcloud artifacts docker images list` (refused).
+  - **🔴 URGENT — T20-1 — the Cloud Run demo the README leads with is down; the GCP project has
+    billing disabled.** Measured 2026-10-02 ~22:30 UTC: `GET <run.app>/health` → 500, then 503,
+    503. `gcloud artifacts docker images list` on project `forge-pdm-mlops` →
+    `PERMISSION_DENIED`, `reason: BILLING_DISABLED`. README L10 ("try it live") and L22
+    ("Interactive demo") point at that URL. The HF mirror answered
+    `{"status":"ok","model_loaded":true,"model_version":"1"}` after a first request that timed out
+    at 40 s (observed once). By inference, not confirmed: Cloud Run stops serving when the billing account is
+    unlinked, free tier or not. Decide: relink billing, or make the HF link the primary one.
+  - **T20-2 — `docs/DEPLOY.md` mixes three eras; two of its instructions reproduce bugs this repo
+    already recorded.** (a) HF steps L39–66 use `dockerfile_path: Dockerfile.hf` + `git push space
+    main`, but `scripts/deploy_space.sh` L10–12 says HF does not reliably honour `dockerfile_path`
+    and `main`'s `Dockerfile` is the no-bake image (F6 bug #1); `deploy_space.sh` is not mentioned
+    in `DEPLOY.md`. (b) L119–120 and L316–320 say to use `scripts/deploy_cloudrun.sh`, whose header
+    says DO NOT RUN; gcloud 575.0.0 rejects its L68 (`--tag` together with `--config`: "At most
+    one of --config | --pack | --tag can be specified", measured with no credentials), after its
+    step 1 may already have created an Artifact Registry repo outside Terraform. (c) L12 says the
+    bake runs "at build time", L95 says "at startup" (same split in `Dockerfile.hf` L5 vs L65; startup
+    is what the code does). (d) L160 and L122–125 describe the pre-F17 script. (e) The L310–314
+    teardown (`gcloud run services delete`) contradicts the Terraform teardown at L267–280 and, by
+    reading, leaves the job, secret and registry. L5's "no idle cold-sleep" for HF: one 40 s
+    timeout followed by 0.4 s answers — consistent with a sleep, not proven.
+  - **T20-3 — `.gcloudignore` uploads the Terraform provider cache on every Cloud Build.**
+    Measured: 86 files, 124.9 MB per upload, of which `terraform/.terraform/` is 122.6 MB (98%);
+    the deploy runs two builds. gcloud does not read `.gitignore` when `.gcloudignore` exists: a
+    dummy `terraform/terraform.tfvars` appeared in the upload list (it would land in the project's
+    private Cloud Build staging bucket). Removing the `mlruns/` line → 29,095 files, 1,988 MB, no
+    warning. Fix: `#!include:.gitignore` at the top of `.gcloudignore`.
+  - **T20-4 — the dirty-tree check in `deploy_cloudrun_neon.sh` L64 misses untracked files.**
+    Measured: a new uncommitted `src/pdm_mlops/untracked_new.py` → `git diff --quiet HEAD` exits 0
+    → tag `8e8e41a` with no `-dirty`, and the file is in the upload list. Fix: `git status
+    --porcelain` (as `deploy_space.sh` L69 already does).
+  - **T20-5 — "Install deps first … so the layer caches across source edits" is false in
+    `Dockerfile` L18–21 and `Dockerfile.hf` L35–42:** `COPY src` precedes `pip install .`.
+    Measured on `Dockerfile`, one run each: cold build 109 s; no-change rebuild 1 s; after appending one comment
+    line to `src/pdm_mlops/__init__.py` the `pip install` layer re-ran (88.0 s; build 118 s; an independent re-run gave 104 s / 0 s / 71.8 s / 101 s).
+    Fix: install dependencies before `COPY src` and the package with `--no-deps` after, or fix the comment.
+  - **T20-6 — the `docker-compose.yml` L12–13 instructions do not populate the registry the
+    service reads.** Measured: with `sqlite:///./mlflow/mlflow.db`, MLflow 3.14.0 sets the
+    experiment `artifact_location` to an absolute host path under `<cwd>/mlruns/`; `docker compose
+    config` shows `mlflow` as a named volume, not the host `./mlflow` folder. By reading: `serving`
+    starts on an empty volume, `/health` → `model_loaded:false`, and the healthcheck (`status==200`
+    only) reports it healthy. Fix: bind-mount `./mlflow:/mlflow` and bake inside a container (e.g.
+    a `seed` service running `seed_demo_registry.py`).
+  - **T20-7 — `scripts/hf_entrypoint.sh` L23–28 prints "fixture is a real file — OK." when the
+    fixture is missing.** Measured with `python`/`pdm` stubbed: missing file → "OK", proceeds;
+    LFS pointer → FATAL, rc 1. Low severity (the real bake fails right after under `set -e`). Fix:
+    `[ -s "${FIXTURE}" ] ||` before the LFS check.
+  - Leads not pursued (by reading only): the Artifact Registry repo (`terraform/main.tf` L108–116)
+    has no `immutable_tags` and no cleanup policy, so SHA tags are immutable by convention and
+    two images per deploy would accumulate (the local serving image is 1.28 GB uncompressed); the
+    compose healthcheck and the deploy smoke test both accept `model_loaded:false`; `LFS_PATHS` in
+    `deploy_space.sh` is enumerated, so a new binary on `main` either does not sync or syncs raw.
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
