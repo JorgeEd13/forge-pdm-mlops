@@ -2443,6 +2443,47 @@ different STATE lines.
     two images per deploy would accumulate (the local serving image is 1.28 GB uncompressed); the
     compose healthcheck and the deploy smoke test both accept `model_loaded:false`; `LFS_PATHS` in
     `deploy_space.sh` is enumerated, so a new binary on `main` either does not sync or syncs raw.
+- **Study backlog, queued 2026-10-02 (APROFUNDAMENTOS `R2-T21`, the CI gate and the scheduled
+  retrain):** six findings, **none fixed**. Measured on `git archive` copies in `/tmp` (ruff 0.16.0,
+  mypy 2.3.0; a fresh venv with exactly CI's `pip install -e ".[dev]"`, on Python 3.14) and by
+  reading GitHub Actions logs (`gh run list/view`, `gh api .../jobs/<id>/logs`, read-only); the repo
+  was not touched.
+  - **🔴 URGENT — T21-1 — the scheduled retrain has failed every run since 2026-07-06, at the
+    install step, before the flow starts.** `gh run list --workflow=retrain.yml`: 13 `failure`
+    (2026-07-06 → 2026-09-28), 1 `success` (2026-06-29). The 2026-09-28 log: `No matching
+    distribution found for can-telemetry-forge==0.2.0; extra == "generate"`. The `[generate]`
+    extra entered the workflow in `f5e192b` (2026-07-02); the only success predates it.
+    `Dockerfile.worker` L41–56 already works around this (generator not on PyPI → `git+…@<SHA>`).
+    README L189 ("Scheduled execution … Triggers the flow on a cron") and the public Actions tab
+    disagree. Fix: install the generator the way the worker image does, then run
+    `workflow_dispatch` once and watch it go green; consider a failure alert.
+  - **T21-2 — CI is green without running 84 of 205 tests, including every HTTP test.** With all
+    extras, `pytest --co` collects 205. CI installs only `[dev]`: `httpx`, `python-multipart`,
+    `prefect`, `evidently` are absent (FastAPI and SQLAlchemy arrive via MLflow). Seven modules
+    `importorskip` at the top (`test_serve`, `test_upload`, `test_demo`, `test_generate_api`,
+    `test_seed_demo_registry`, `test_monitor`, `test_flows`: 72 tests) and report as 7 skips; 12
+    more skip inside tests (`[deep]`, `[tune]`, `[generate]`). CI run `37072642298` (ubuntu 3.12)
+    and the replica venv both: `121 passed, 19 skipped`. The `ci.yml` L51–53 comment only mentions
+    `[generate]`. Fix: one extra job with `.[dev,serve,ops,cloud]`, or a ceiling on the skip count.
+  - **T21-3 — global `ignore_missing_imports = true` lets a non-existent import through.**
+    `from lightgbm …` → `from lightgbmm …` in `models.py:28`: ruff exit 0, mypy "Success";
+    `ModuleNotFoundError` only at import. With the option off: 42 errors at baseline, 43 mutated.
+    The test job catches this case; by reading, a typo in a module imported only by the skipped
+    tests of T21-2 would pass all of CI. Fix: per-module `[[tool.mypy.overrides]]` for untyped libs.
+  - **T21-4 — the gate's tools are not pinned.** `dev = ["pytest>=7", "ruff>=0.16", "mypy>=1.14"]`;
+    CI installed ruff 0.16.10 / mypy 2.4.0 (run `37072642298`), the dev machine has 0.16.0 / 2.3.0.
+    By reading, not observed: a ruff release adding a rule to a selected family would turn CI red
+    with no commit. Terraform in the same `ci.yml` is pinned exactly (L81). Fix: pin the dev tools.
+  - **T21-5 — `retrain.yml` L42 interpolates `github.event.inputs.season` into the shell script;
+    no workflow declares `permissions:`.** By reading: `${{ }}` is substituted before bash runs
+    (script-injection pattern). Measured: repo `default_workflow_permissions: "read"`, and only
+    writers can `workflow_dispatch`, so exposure is low by repo setting, not by file. Fix: pass the
+    input via `env:` and add `permissions: contents: read`.
+  - **T21-6 — nothing guards the lint config against loosening.** Removing `strict=True` from
+    `diagnostics.py:96` → ruff exit 1 (`B905`); adding `"B905"` to `ignore` → ruff exit 0, mypy
+    exit 0, with the "Fail loudly" comment still above the line. No test or CODEOWNERS covers
+    `[tool.ruff]` / `[tool.mypy]`. Inherent to a self-referential gate; ADR-028 states "red always
+    means a new defect" without the twin "green after a config edit means nothing".
 
 ## Notes
 
