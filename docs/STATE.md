@@ -2344,6 +2344,48 @@ different STATE lines.
     when it registers nothing; `default_tracking_uri()` creates a directory; the "byte-identical
     data" claim (`config.py` L23) has no check in this territory.
 
+- **Study backlog, queued 2026-10-02 (APROFUNDAMENTOS `R2-T19`, the Terraform config):** four
+  findings over `terraform/*.tf`, **none fixed**. All measured offline on a `mktemp -d` copy of
+  `terraform/` (Terraform 1.13.1, the CI version; `backend "local"` override so `terraform graph`
+  runs without credentials); the repo was not touched. **No real `plan` was run** (no GCP
+  credentials on the study machine), so effects that need `plan` are marked "by reading".
+  - **T19-1 — the image variables still default to `:latest`, and the manual commands in
+    `docs/DEPLOY.md` rely on that default.** The deploy script tags and passes `:<git-sha>`
+    (`scripts/deploy_cloudrun_neon.sh` L63–73, L109–113), but `variables.tf` keeps `default = null`
+    and `main.tf` L21–22 falls back to `:latest`. `DEPLOY.md` L264 (`terraform plan`) and L275
+    (teardown step 1, `terraform apply -var deletion_protection=false`) pass no image variables.
+    By reading: a hand-run `plan` shows an image change on both Cloud Run resources, and teardown
+    step 1 applies it to the live demo before destroying. The `variables.tf` L43–48 comment
+    ("matches what is live", "the deploy script forces a new revision itself") describes the
+    pre-F17 script. Fix: make the image variables required (or use digests) and pass them in the
+    documented manual commands.
+  - **T19-2 — the Terraform CI job (`fmt -check` + `validate`) stays green on each of five
+    measured policy regressions this config exists to prevent.** Measured: role reverted to `roles/run.invoker`,
+    the job's `depends_on` on the secret binding deleted, `deletion_protection` default set to
+    `false`, a misspelled role name, and an `import` block deleted → `fmt` and `validate` green in
+    all five; only a broken attribute reference failed `validate`. Deleting the `depends_on`
+    changed the `terraform graph` edges (the job no longer depends on the binding), and nothing in
+    CI reads the graph. No pytest test reads `terraform/`. The deploy script does not pass
+    `deletion_protection`, so a PR flipping that default would be applied by the next deploy.
+    Fix: `terraform test` with `mock_provider` (offline) asserting the `api_invokes_job` role,
+    `deletion_protection = true`, and the explicit dependency.
+  - **T19-3 — `imports.tf` would make a fresh-project `plan` fail, against the
+    "stand up the system somewhere else" claim in `variables.tf` L1–3.** By reading, not measured
+    (needs an empty GCP project): the 10 import IDs are literals (`forge-pdm-mlops`,
+    `us-central1`, `versions/4`), and an `import` block whose target does not exist stops the plan
+    instead of creating the resource (documented Terraform behaviour, not checked against 1.13.1).
+    `DEPLOY.md` L254 tells a first deploy into a fresh project to run `terraform apply`. Fix:
+    delete `imports.tf` (the history is in ADR-027 and git), or derive the IDs from `var.*`.
+  - **T19-4 — `data "google_project" "this"` is read on every plan for an unused value.**
+    Measured by grep: `local.legacy_default_sa` (`main.tf` L38) is referenced nowhere, and it is
+    the data source's only consumer. Low severity. Fix: delete both; the project number is already
+    in the `imports.tf` L91–92 comment.
+  - Leads not pursued (by reading only): state size is "~50 KB" in `versions.tf` L21 and "32 KB"
+    in ADR-027, neither measured; the permission counts quoted for the Cloud Run roles (3 and 88)
+    are a third-party catalogue claim not re-checked; `_iam_member` cannot see roles granted to
+    the new service accounts outside Terraform; the import pins secret version 4 while both
+    containers read `latest`; `max_instance_count = 20` has no written link to the $0 budget.
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
