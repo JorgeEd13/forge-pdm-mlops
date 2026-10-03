@@ -2485,6 +2485,52 @@ different STATE lines.
     `[tool.ruff]` / `[tool.mypy]`. Inherent to a self-referential gate; ADR-028 states "red always
     means a new defect" without the twin "green after a config edit means nothing".
 
+- **Study backlog, queued 2026-10-02 (APROFUNDAMENTOS `R2-V3`, blind verification of product and
+  infra T15–T21):** two independent reviewers with no docs, each on its own copy of the tree (one on
+  the code, one on the tests + CI). **None fixed.** Mutation score: code reviewer **4 of 7** green,
+  test reviewer **28 of 39** green (scoped baseline `test_demo.py` + `test_seed_demo_registry.py` +
+  `test_skeleton.py`: **20 passed, 0 skipped**, 74 s). Only findings **not already queued** by
+  `R2-T15`…`R2-T21` are listed; the rest re-confirmed existing items (T16-1 TDZ crash, T16-3 no JS
+  oracle, T15-3, T17-4, T18-1 — `promote` always exiting 0 and `monitor`'s exit code inverted both
+  stay green —, T18-3, T18-6, T19-2, T20-3, T20-4, T20-7).
+  - **V3-1 — the number inputs' `step` rejects real readings that are off the grid.** Measured in
+    headless Chrome on the rendered page: rpm 1234 ("nearest valid values are 1230 and 1240"),
+    vibration 2.35 and coolant 98.6 are refused by native form validation and nothing is sent. The
+    comment describes a bounded range, not a quantized one. Fix: `step="any"` (keep `min`/`max`).
+  - **V3-2 — `deploy_space.sh` "syncs" with `git checkout main -- <paths>`, which never deletes.**
+    Measured in a scratch repo: a file removed on `main` stayed in the Space tree, exit 0. The
+    script also leaves `lfs.url` in the repo's git config after the run. Fix: `git rm -r --cached`
+    the sync paths before the checkout (or `git read-tree`), and scope the LFS URL to the push.
+  - **V3-3 — `deploy_cloudrun.sh`'s "DO NOT RUN" is a comment, not a guard.** With `gcloud`
+    stubbed, the script ran to exit 0 and issued `sql instances create … db-f1-micro`,
+    `sql users create … --password <generated>` and `run deploy`. The generated DB password is on
+    the command line, while the script's own comment says it is never printed. Fix: `exit 1` right
+    under the header (or delete the script; ADR-016 keeps the record).
+  - **V3-4 — `test_demo.py` writes MLflow model artifacts into the repo-root `./mlruns/`.** The
+    tracking DB goes to a tmp path, but the artifact location does not. Found by both reviewers
+    independently: one run of the three scoped files left **40 files**; `-k "page or preset or
+    signal"` alone left **20**. The directory is gitignored, so nothing shows in `git status`. Fix:
+    give the fixture's experiment an `artifact_location` under `tmp_path`.
+  - **V3-5 — two more page assertions that cannot fail (same class as T15-3).** Changing
+    `if recent:` to `if not recent:` (the recent-predictions table is never rendered) → **20
+    passed**: the test looks for `"<table"` and `"Postgres"`, and both appear on every render.
+    Removing the `<strong>not</strong>` from the English banner ("are a reported result") → **20
+    passed**: `"not" in page.lower()` matches anywhere. Removing `html.escape` on `model_version`
+    in that table stays green too (found by both reviewers).
+  - **V3-6 — after T21-1 is fixed, the scheduled retrain will go red on every quiet week.** By
+    reading: `pdm flow` exits 1 when nothing is promoted (`cli.py` L308 — deliberate, per its comment, so a
+    scheduler can tell "promoted" from "nothing changed"), and the registry lives
+    on the ephemeral runner, so a promotion that does happen is discarded with it. Fix: decide what
+    the job is for; if it is a health check, exit 0 on "no promotion".
+  - **V3-7 — nothing checks the images.** With the three scoped test files plus ruff/mypy/Terraform
+    (CI runs the full suite; it was not run against these mutations), these stay green: `Dockerfile` `CMD` on port 8080 while `EXPOSE` says 8000;
+    `hf_entrypoint.sh` binding to `127.0.0.1`; the seed script promoting with `gate=False`, or with
+    `_already_promoted` inverted. No CI step builds or starts an image. Fix: one CI job that builds
+    `Dockerfile` and hits `/health`.
+  - Leads not pursued (by reading only): `Dockerfile.worker` installs the generator at a pinned
+    commit and then `pip install ".[cloud,generate]"`, whose `can-telemetry-forge==0.2.0` pin could make
+    pip resolve the package again (not built, not verified).
+
 ## Notes
 
 - **Cross-repo (2026-07-02): this repo owns the showcase's IaC / managed-cloud gate.** A
