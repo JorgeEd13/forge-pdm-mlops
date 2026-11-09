@@ -7,7 +7,7 @@
 <p align="center"><em>A predictive-maintenance ML pipeline with the production spine closed end to end — train → registry → serve → drift → retrain → cloud.</em></p>
 
 <p align="center">
-  <a href="https://forge-pdm-mlops-958199756179.us-central1.run.app/demo"><img src="https://img.shields.io/badge/▶%20try%20it%20live-interactive%20demo-4285F4?logo=googlecloud&logoColor=white" alt="Try it live"></a>
+  <a href="https://jorgeed-forge-pdm-mlops.hf.space/demo"><img src="https://img.shields.io/badge/▶%20try%20it%20live-interactive%20demo-FFD21E?logo=huggingface&logoColor=black" alt="Try it live"></a>
   <img src="https://img.shields.io/badge/ROC--AUC-~0.82-success" alt="ROC-AUC ~0.82">
   <img src="https://img.shields.io/badge/tests-205%20offline-success" alt="205 offline tests">
   <img src="https://img.shields.io/badge/data-100%25%20synthetic-blueviolet" alt="100% synthetic data">
@@ -19,12 +19,14 @@
 
 ## ▶ Try it — no signup, no key
 
-**[Interactive demo](https://forge-pdm-mlops-958199756179.us-central1.run.app/demo)** — score machine telemetry for failure risk, upload your own CSV/Parquet, or **generate a synthetic fleet** and get one risk score per vehicle.
-Runs on **Google Cloud Run** with a **managed Neon Postgres** behind it, at **$0**.
+**[Interactive demo](https://jorgeed-forge-pdm-mlops.hf.space/demo)** — score machine telemetry for failure risk, or upload your own CSV/Parquet.
+Hosted free on **Hugging Face Spaces**. The Space sleeps when idle, so the first load can take about a minute.
 
-> Fleet generation is a **web + worker** system: the page kicks off a run and the API answers in ~16 ms, because the generator runs in a **separate Cloud Run Job** — not in a background thread on the serving container. A vehicle is flagged on **sustained** risk (the peak of a 1-hour rolling mean), not on its single worst reading: the generator injects sensor outliers on purpose, and ranking on the max flags healthy vehicles. Both choices are measured, not asserted — [ADR-026](docs/DECISIONS.md).
+> **Generate-your-own-fleet is off on this host.** It needs a database and a worker, and the free Space has neither, so the panel says so and the API answers an honest `503`. It ran on the managed-cloud deploy (below) from 2026-07-14 to 2026-10-02.
 
-Also live on Hugging Face Spaces: [`/health`](https://jorgeed-forge-pdm-mlops.hf.space/health) · [`/model-info`](https://jorgeed-forge-pdm-mlops.hf.space/model-info) · [`/docs`](https://jorgeed-forge-pdm-mlops.hf.space/docs)
+> On that deploy, fleet generation was a **web + worker** system: the page kicked off a run and the API answered in ~16 ms, because the generator ran in a **separate Cloud Run Job** — not in a background thread on the serving container. A vehicle is flagged on **sustained** risk (the peak of a 1-hour rolling mean), not on its single worst reading: the generator injects sensor outliers on purpose, and ranking on the max flags healthy vehicles. Both choices are measured, not asserted — [ADR-026](docs/DECISIONS.md).
+
+Other endpoints: [`/health`](https://jorgeed-forge-pdm-mlops.hf.space/health) · [`/model-info`](https://jorgeed-forge-pdm-mlops.hf.space/model-info) · [`/docs`](https://jorgeed-forge-pdm-mlops.hf.space/docs)
 
 > **The honesty boundary.** The data is **100% synthetic**. The served model is a fixture-trained **demo**, labelled as such by `/model-info` — the ≈0.82 figure is the full-data model trained locally, and it is the only number ever reported. Nothing here claims a live *production* deployment; the drift→retrain loop is a demonstrated closed loop on synthetic data.
 
@@ -126,11 +128,16 @@ optimizing** and go build the spine.
 
 ### 🌩️ Operated on managed cloud — not just containerized
 
-The same image runs on **Google Cloud Run** (a managed serverless container runtime, not a VM)
-with a **managed Neon Postgres** behind it. The `/demo` page scores your inputs and **logs each
-prediction to the managed database, then reads it back** — so the managed resource has a real
-job, not a decorative one. Secrets live in **Secret Manager**; the image builds via **Cloud
-Build**. The whole thing runs at **$0** (scale-to-zero + Neon free tier).
+From 2026-07-04 to 2026-10-02 the same image ran on **Google Cloud Run** (a managed serverless
+container runtime, not a VM) with a **managed Neon Postgres** behind it. The `/demo` page scored
+your inputs and **logged each prediction to the managed database, then read it back** — so the
+managed resource had a real job, not a decorative one. Secrets lived in **Secret Manager**; the
+image built via **Cloud Build**. The whole thing ran at **$0** (scale-to-zero + Neon free tier).
+
+**That deploy is retired.** The GCP free trial ended, the billing account closed, and Cloud Run
+stopped serving; keeping it would mean a paid account. The demo moved to the free Hugging Face
+Space above. The managed stack is still defined in [`terraform/`](terraform/) (ADR-027), so one
+`terraform apply` on a billed project brings it back.
 
 `store_pg.open_log()` accepts **any** SQLAlchemy URL, so the same code runs on tmp SQLite in
 tests and Postgres in production — and **graceful degradation is a hard invariant**: with no
@@ -187,7 +194,7 @@ pdm flow    --season heatwave     # the full loop, in-process
 | Drift | **Evidently** | Baseline vs. a `season`-shifted distribution, under an auditable share-of-features policy. |
 | Orchestration | **Prefect** | Authors `detect → retrain → promote-or-hold`; runs in-process for tests. |
 | Scheduled execution | **GitHub Actions** | Triggers the flow on a cron, on free runners. |
-| Managed cloud | **Cloud Run** + **Neon** | Managed runtime + managed Postgres, in production, at $0. |
+| Managed cloud | **Cloud Run** + **Neon** | Managed runtime + managed Postgres, operated at $0 (2026-07 → 2026-10; retired, infra kept in Terraform). |
 
 Prefect and Actions sit at **different layers** — Actions is the *scheduler*, Prefect is the
 *flow author* — and each closes a distinct gap. Rationale in [ADR-002](docs/DECISIONS.md).

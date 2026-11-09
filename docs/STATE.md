@@ -4,6 +4,13 @@ Updated: 2026-07-14 (session: **F17 SHIPPED** — the infra is Terraform; the Ia
 
 ## Current focus
 
+> **2026-11-09 — the Cloud Run deploy is RETIRED; HF Spaces is the only live demo.** The GCP
+> trial ended and billing account `0186E5-884830-55F498` is closed, so Cloud Run answers a Google
+> 500 page (T20-1). Jorge decided not to relink billing ($0 budget rule): the managed-cloud gate
+> stays closed on the record (operated 2026-07-04 → 2026-10-02, infra in `terraform/`), not on a
+> live URL. HF `/demo` scores and uploads; generation is off there (503, no DB/worker). Docs only,
+> no code touched (the R2 freeze holds).
+
 > 🧊 **FROZEN for feature work since 2026-09-04 — study block open.** This repo was cut into
 > **21 territories** by the APROFUNDAMENTOS programme (`repo-base-career/sistema/APROFUNDAMENTOS_ROADMAP.md`
 > §R2). While the block is open, that programme reads this code line by line and measures its
@@ -2391,7 +2398,10 @@ different STATE lines.
   (gcloud 575.0.0 `meta list-files-for-upload`, which is local; Docker 29.8.2; MLflow 3.14.0); the
   repo was not touched. Two read-only probes went outside: `curl` on the two public endpoints, and
   one `gcloud artifacts docker images list` (refused).
-  - **🔴 URGENT — T20-1 — the Cloud Run demo the README leads with is down; the GCP project has
+  - **✅ RESOLVED 2026-11-09 — T20-1** (Jorge chose to retire Cloud Run, not relink billing; billing
+    account `OPEN False`, re-probed `/health` → 500. README, ROADMAP F7, DEPLOY.md and every CV now
+    point at the HF `/demo`, which answered `POST /demo/predict` → 200, `persisted:false`).
+    Original finding: **🔴 URGENT — T20-1 — the Cloud Run demo the README leads with is down; the GCP project has
     billing disabled.** Measured 2026-10-02 ~22:30 UTC: `GET <run.app>/health` → 500, then 503,
     503. `gcloud artifacts docker images list` on project `forge-pdm-mlops` →
     `PERMISSION_DENIED`, `reason: BILLING_DISABLED`. README L10 ("try it live") and L22

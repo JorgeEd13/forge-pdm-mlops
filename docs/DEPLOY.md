@@ -1,5 +1,10 @@
 # Deploy — the hosted free-tier `/health` link (F6)
 
+> **2026-11-09:** the Hugging Face Space is the **only** live deploy. The Cloud Run + Neon deploy
+> described further down was retired on 2026-10-02 (GCP trial ended, billing account closed).
+> Its sections are kept as the record and as the path back via `terraform/`; they are not a
+> running system.
+
 The F6 stretch goal: a **reachable live endpoint** so the serving layer isn't just a
 `docker compose up` claim but a URL a reviewer can click. Target: **Hugging Face Spaces**
 (a Docker Space) — a permanent free URL with no idle cold-sleep, and it fits the
