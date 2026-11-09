@@ -356,8 +356,9 @@ below in full so the judgment (and the scoping) is on the record.
   round-trips exactly like `/predict` (and 503s the same when nothing is promoted); with a log
   injected the served rows **persist** and surface on the page; with no log the demo still works
   and says so. `test_store_pg.py` (8, `[cloud]`-gated) + `test_demo.py` (`[serve]`+`[cloud]`-gated)
-  green offline. **DONE — LIVE 2026-07-04** at
-  https://forge-pdm-mlops-958199756179.us-central1.run.app (`/demo`, `persisted:true`), on
+  green offline. **DONE — LIVE 2026-07-04** (⚠️ retired 2026-10-02, URL below is dead — demo now at
+  https://jorgeed-forge-pdm-mlops.hf.space/demo) at
+  `https://forge-pdm-mlops-958199756179.us-central1.run.app` (`/demo`, `persisted:true`), on
   **Cloud Run + Neon** at $0 (Cloud SQL had no free tier — see the cost pivot). The README
   carries the `/demo` link. **ADR-015 + ADR-016.**
 
