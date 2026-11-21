@@ -2540,6 +2540,15 @@ different STATE lines.
   - Leads not pursued (by reading only): `Dockerfile.worker` installs the generator at a pinned
     commit and then `pip install ".[cloud,generate]"`, whose `can-telemetry-forge==0.2.0` pin could make
     pip resolve the package again (not built, not verified).
+- **Study backlog, queued 2026-11-21 (APROFUNDAMENTOS `R2-P`, a blind beginner test of the study
+  material):** two stale comments found by the grader, **none fixed**:
+  - `src/pdm_mlops/diagnostics.py` `feature_importance` docstring says "LightGBM gain", but
+    `models.py` builds `LGBMClassifier` without `importance_type`, so `feature_importances_` uses
+    LightGBM's default, `"split"` (how many times a feature is used in a split). Fix: either pass
+    `importance_type="gain"` or change the docstring to "split count".
+  - `tests/test_diagnostics.py` comment `# train ≈ 1.0 vs. CV ≈ 0.6 on 15 units`: the unit count is
+    out of date for the current fixture split (`TEST_SIZE = 0.25` in `features.py`). Fix: drop the
+    number or recompute it from the fixture.
 
 ## Notes
 
